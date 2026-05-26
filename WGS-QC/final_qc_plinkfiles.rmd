@@ -1,0 +1,341 @@
+---
+title: "WGS Quality Control Pipeline for PLINK Files"
+author: "Matthew Fischer"
+date: "2025-01-21"
+output: html_document
+---
+
+# Overview
+
+This document describes the quality control (QC) pipeline for creating final QC'd PLINK files from MESA proteomics whole genome sequencing (WGS) data. The pipeline is applied to five population groups:
+
+- **allpops**: All populations combined
+- **europop**: European ancestry
+- **aapop**: African American ancestry
+- **hispop**: Hispanic ancestry
+- **chnpop**: Chinese ancestry
+
+## QC Pipeline Steps
+
+Each population undergoes the following QC steps:
+
+1. **Variant QC**: Filter variants by missingness (--geno 0.02), Hardy-Weinberg equilibrium (--hwe 1e-6), and minor allele frequency (--maf 0.01)
+2. **Sample filtering**: Retain PC-AiR in-group samples (unrelated individuals passing relatedness QC)
+3. **Covariate filtering**: Remove samples missing essential covariate data
+4. **MAF recalculation**: Recalculate MAF after sample filtering
+5. **X chromosome merge**: Merge autosomal variants (chr 1-22) with X chromosome variants
+6. **Final filtering**: Apply final missingness and MAF filters
+7. **Sex update**: Update sex information in final files
+
+## Prerequisites
+
+- PLINK v1.9 or later
+- Input PLINK files (.bed, .bim, .fam)
+- PC-AiR ingroup IDs file
+- Sample exclusion list (samples missing covariates)
+- Sex update file
+
+## Directory Structure
+
+```bash
+# Set base directories (adjust these paths for your system)
+WGS_QC_DIR="path/to/WGS_QC"
+PROTEOMICS_QC_DIR="path/to/Proteomics_QC"
+PLINK_INPUT_DIR="${WGS_QC_DIR}/Plink_files/allchr_MESAproteomics/merged/rm_dups"
+QC_OUTPUT_DIR="${WGS_QC_DIR}/QC_MESAproteomics_allchr/final_qc_plinkfiles"
+```
+
+---
+
+# All Populations QC
+
+## Step 1: Variant-level QC
+Apply genotyping call rate filter (geno 0.02), Hardy-Weinberg equilibrium test (hwe 1e-6), and minor allele frequency filter (maf 0.01).
+
+```bash
+plink --bfile ${PLINK_INPUT_DIR}/mesa.freeze.10b.chr1-22.pass_and_fail.gtonly.minDP10_rmdups \
+      --geno 0.02 \
+      --hwe 1e-6 \
+      --maf 0.01 \
+      --make-bed \
+      --out ${QC_OUTPUT_DIR}/allpops/allpops_qc
+```
+
+## Step 2: Filter to PC-AiR in-group samples
+Retain only unrelated individuals identified by PC-AiR analysis.
+
+```bash
+plink --bfile ${QC_OUTPUT_DIR}/allpops/allpops_qc \
+      --keep-fam ${WGS_QC_DIR}/QC_MESAproteomics_allchr/allpops_merged_geno0.02_mind0.02/PCAIR/ingroup_IDs.txt \
+      --make-bed \
+      --out ${QC_OUTPUT_DIR}/allpops/allpops_pcair
+```
+
+## Step 3: Remove samples with missing covariate data
+Exclude samples missing essential phenotype/covariate information (e.g., age at collection).
+
+```bash
+plink --bfile ${QC_OUTPUT_DIR}/allpops/allpops_pcair \
+      --remove-fam ${PROTEOMICS_QC_DIR}/proteomics_information/samples_missing_covariates.txt \
+      --make-bed \
+      --out ${QC_OUTPUT_DIR}/allpops/allpops_sampleqc
+```
+
+## Step 4: Recalculate MAF after sample filtering
+Re-apply MAF filter based on the reduced sample size.
+
+```bash
+plink --bfile ${QC_OUTPUT_DIR}/allpops/allpops_sampleqc \
+      --maf 0.01 \
+      --make-bed \
+      --out ${QC_OUTPUT_DIR}/allpops/allpops_maf
+```
+
+## Step 5: Merge with X chromosome
+Combine autosomal variants with X chromosome variants.
+
+```bash
+plink --bfile ${QC_OUTPUT_DIR}/allpops/allpops_maf \
+      --bmerge ${QC_OUTPUT_DIR}/allpops/allpops_X-chr \
+      --make-bed \
+      --out ${QC_OUTPUT_DIR}/allpops/allpops_merged
+```
+
+## Step 6: Final missingness and MAF filtering
+Apply final filters to merged dataset.
+
+```bash
+plink --bfile ${QC_OUTPUT_DIR}/allpops/allpops_merged \
+      --geno 0.02 \
+      --maf 0.01 \
+      --make-bed \
+      --out ${QC_OUTPUT_DIR}/allpops/allpops_filtered
+```
+
+## Step 7: Update sex information
+Add correct biological sex information to final files.
+
+```bash
+plink --bfile ${QC_OUTPUT_DIR}/allpops/allpops_filtered \
+      --update-sex ${WGS_QC_DIR}/population_txt_files/sex_update.txt \
+      --make-bed \
+      --out ${QC_OUTPUT_DIR}/allpops/allpops_finalqc
+```
+
+---
+
+# Population-Specific QC
+
+The following sections apply the same QC pipeline to individual ancestry groups. For population-specific analyses, samples are first subset by self-reported ancestry, then undergo the same filtering steps.
+
+## European Ancestry (europop)
+
+```bash
+# Step 1: Filter to PC-AiR in-group samples
+plink --bfile ${WGS_QC_DIR}/QC_MESAproteomics_allchr/europop/QC_geno0.02_mind0.02/europop_filtered \
+      --keep-fam ${WGS_QC_DIR}/QC_MESAproteomics_allchr/allpops_merged_geno0.02_mind0.02/PCAIR/ingroup_IDs.txt \
+      --make-bed \
+      --out ${QC_OUTPUT_DIR}/europop/europop_pcair
+
+# Step 2: Remove samples with missing covariate data
+plink --bfile ${QC_OUTPUT_DIR}/europop/europop_pcair \
+      --remove-fam ${PROTEOMICS_QC_DIR}/proteomics_information/samples_missing_covariates.txt \
+      --make-bed \
+      --out ${QC_OUTPUT_DIR}/europop/europop_sampleqc
+
+# Step 3: Recalculate MAF
+plink --bfile ${QC_OUTPUT_DIR}/europop/europop_sampleqc \
+      --maf 0.01 \
+      --make-bed \
+      --out ${QC_OUTPUT_DIR}/europop/europop_maf
+
+# Step 4: Merge with X chromosome
+plink --bfile ${QC_OUTPUT_DIR}/europop/europop_maf \
+      --bmerge ${QC_OUTPUT_DIR}/europop/europop_X-chr \
+      --make-bed \
+      --out ${QC_OUTPUT_DIR}/europop/europop_merged
+
+# Step 5: Final filtering
+plink --bfile ${QC_OUTPUT_DIR}/europop/europop_merged \
+      --geno 0.02 \
+      --maf 0.01 \
+      --make-bed \
+      --out ${QC_OUTPUT_DIR}/europop/europop_filtered
+
+# Step 6: Update sex
+plink --bfile ${QC_OUTPUT_DIR}/europop/europop_filtered \
+      --update-sex ${WGS_QC_DIR}/population_txt_files/sex_update.txt \
+      --make-bed \
+      --out ${QC_OUTPUT_DIR}/europop/europop_finalqc
+```
+
+## African American Ancestry (aapop)
+
+```bash
+# Step 1: Filter to PC-AiR in-group samples
+plink --bfile ${WGS_QC_DIR}/QC_MESAproteomics_allchr/aapop/QC_geno0.02_mind0.02/aapop_filtered \
+      --keep-fam ${WGS_QC_DIR}/QC_MESAproteomics_allchr/allpops_merged_geno0.02_mind0.02/PCAIR/ingroup_IDs.txt \
+      --make-bed \
+      --out ${QC_OUTPUT_DIR}/aapop/aapop_pcair
+
+# Step 2: Remove samples with missing covariate data
+plink --bfile ${QC_OUTPUT_DIR}/aapop/aapop_pcair \
+      --remove-fam ${PROTEOMICS_QC_DIR}/proteomics_information/samples_missing_covariates.txt \
+      --make-bed \
+      --out ${QC_OUTPUT_DIR}/aapop/aapop_sampleqc
+
+# Step 3: Recalculate MAF
+plink --bfile ${QC_OUTPUT_DIR}/aapop/aapop_sampleqc \
+      --maf 0.01 \
+      --make-bed \
+      --out ${QC_OUTPUT_DIR}/aapop/aapop_maf
+
+# Step 4: Merge with X chromosome
+plink --bfile ${QC_OUTPUT_DIR}/aapop/aapop_maf \
+      --bmerge ${QC_OUTPUT_DIR}/aapop/aapop_X-chr \
+      --make-bed \
+      --out ${QC_OUTPUT_DIR}/aapop/aapop_merged
+
+# Step 5: Final filtering
+plink --bfile ${QC_OUTPUT_DIR}/aapop/aapop_merged \
+      --geno 0.02 \
+      --maf 0.01 \
+      --make-bed \
+      --out ${QC_OUTPUT_DIR}/aapop/aapop_filtered
+
+# Step 6: Update sex
+plink --bfile ${QC_OUTPUT_DIR}/aapop/aapop_filtered \
+      --update-sex ${WGS_QC_DIR}/population_txt_files/sex_update.txt \
+      --make-bed \
+      --out ${QC_OUTPUT_DIR}/aapop/aapop_finalqc
+```
+
+## Hispanic Ancestry (hispop)
+
+```bash
+# Step 1: Filter to PC-AiR in-group samples
+plink --bfile ${WGS_QC_DIR}/QC_MESAproteomics_allchr/hispop/QC_geno0.02_mind0.02/hispop_filtered \
+      --keep-fam ${WGS_QC_DIR}/QC_MESAproteomics_allchr/allpops_merged_geno0.02_mind0.02/PCAIR/ingroup_IDs.txt \
+      --make-bed \
+      --out ${QC_OUTPUT_DIR}/hispop/hispop_pcair
+
+# Step 2: Remove samples with missing covariate data
+plink --bfile ${QC_OUTPUT_DIR}/hispop/hispop_pcair \
+      --remove-fam ${PROTEOMICS_QC_DIR}/proteomics_information/samples_missing_covariates.txt \
+      --make-bed \
+      --out ${QC_OUTPUT_DIR}/hispop/hispop_sampleqc
+
+# Step 3: Recalculate MAF
+plink --bfile ${QC_OUTPUT_DIR}/hispop/hispop_sampleqc \
+      --maf 0.01 \
+      --make-bed \
+      --out ${QC_OUTPUT_DIR}/hispop/hispop_maf
+
+# Step 4: Merge with X chromosome
+plink --bfile ${QC_OUTPUT_DIR}/hispop/hispop_maf \
+      --bmerge ${QC_OUTPUT_DIR}/hispop/hispop_X-chr \
+      --make-bed \
+      --out ${QC_OUTPUT_DIR}/hispop/hispop_merged
+
+# Step 5: Final filtering
+plink --bfile ${QC_OUTPUT_DIR}/hispop/hispop_merged \
+      --geno 0.02 \
+      --maf 0.01 \
+      --make-bed \
+      --out ${QC_OUTPUT_DIR}/hispop/hispop_filtered
+
+# Step 6: Update sex
+plink --bfile ${QC_OUTPUT_DIR}/hispop/hispop_filtered \
+      --update-sex ${WGS_QC_DIR}/population_txt_files/sex_update.txt \
+      --make-bed \
+      --out ${QC_OUTPUT_DIR}/hispop/hispop_finalqc
+```
+
+## Chinese Ancestry (chnpop)
+
+```bash
+# Step 1: Filter to PC-AiR in-group samples
+plink --bfile ${WGS_QC_DIR}/QC_MESAproteomics_allchr/chnpop/QC_geno0.02_mind0.02/chnpop_filtered \
+      --keep-fam ${WGS_QC_DIR}/QC_MESAproteomics_allchr/allpops_merged_geno0.02_mind0.02/PCAIR/ingroup_IDs.txt \
+      --make-bed \
+      --out ${QC_OUTPUT_DIR}/chnpop/chnpop_pcair
+
+# Step 2: Remove samples with missing covariate data
+plink --bfile ${QC_OUTPUT_DIR}/chnpop/chnpop_pcair \
+      --remove-fam ${PROTEOMICS_QC_DIR}/proteomics_information/samples_missing_covariates.txt \
+      --make-bed \
+      --out ${QC_OUTPUT_DIR}/chnpop/chnpop_sampleqc
+
+# Step 3: Recalculate MAF
+plink --bfile ${QC_OUTPUT_DIR}/chnpop/chnpop_sampleqc \
+      --maf 0.01 \
+      --make-bed \
+      --out ${QC_OUTPUT_DIR}/chnpop/chnpop_maf
+
+# Step 4: Merge with X chromosome
+plink --bfile ${QC_OUTPUT_DIR}/chnpop/chnpop_maf \
+      --bmerge ${QC_OUTPUT_DIR}/chnpop/chnpop_X-chr \
+      --make-bed \
+      --out ${QC_OUTPUT_DIR}/chnpop/chnpop_merged
+
+# Step 5: Final filtering
+plink --bfile ${QC_OUTPUT_DIR}/chnpop/chnpop_merged \
+      --geno 0.02 \
+      --maf 0.01 \
+      --make-bed \
+      --out ${QC_OUTPUT_DIR}/chnpop/chnpop_filtered
+
+# Step 6: Update sex
+plink --bfile ${QC_OUTPUT_DIR}/chnpop/chnpop_filtered \
+      --update-sex ${WGS_QC_DIR}/population_txt_files/sex_update.txt \
+      --make-bed \
+      --out ${QC_OUTPUT_DIR}/chnpop/chnpop_finalqc
+```
+
+---
+
+# Summary Statistics
+
+## Final Sample Sizes
+
+After all QC steps:
+
+| Population | N (post-QC) | N (PC-AiR) | N (final) |
+|------------|-------------|------------|-----------|
+| All        | 3,311       | 2,963      | 2,953     |
+| European   | 1,338       | 1,271      | 1,270     |
+| African American | 744   | 683        | 675       |
+| Hispanic   | 673         | 643        | 642       |
+| Chinese    | 373         | 366        | 366       |
+
+**Total samples in final dataset: 2,953**
+
+## QC Thresholds Applied
+
+- **Variant missingness**: ≤2% (--geno 0.02)
+- **Hardy-Weinberg equilibrium**: p > 1×10⁻⁶ (--hwe 1e-6, applied to allpops only)
+- **Minor allele frequency**: ≥1% (--maf 0.01)
+- **Sample relatedness**: Unrelated samples only (PC-AiR in-group)
+- **Sample completeness**: Samples with complete covariate data
+
+## Output Files
+
+For each population, the following files are generated:
+
+- `{population}_finalqc.bed` - Binary genotype file
+- `{population}_finalqc.bim` - Variant information file
+- `{population}_finalqc.fam` - Sample information file
+- `{population}_finalqc.log` - PLINK log file
+
+---
+
+# Notes
+
+1. **PC-AiR**: Principal Components Analysis in Related samples, used to identify a maximal set of unrelated individuals for downstream analyses.
+
+2. **X chromosome processing**: X chromosome variants are processed separately and merged after autosomal QC to ensure proper handling of sex-specific genotype calls.
+
+3. **Population stratification**: Population-specific files are used for ancestry-specific analyses to minimize population stratification effects.
+
+4. **MAF recalculation**: MAF is recalculated after sample filtering because allele frequencies change with different sample compositions.
+

@@ -1,0 +1,212 @@
+---
+title: "X Chromosome Quality Control Pipeline"
+author: "Matthew Fischer"
+date: "2025-01-22"
+output: html_document
+---
+
+# Overview
+
+This document describes the quality control (QC) pipeline for X chromosome variants from whole genome sequencing (WGS) data. The X chromosome requires special handling due to:
+
+1. **Pseudoautosomal regions (PAR)**: Regions that behave like autosomes and recombine between X and Y
+2. **Sex-specific genotypes**: Males are hemizygous (one copy) for non-PAR regions
+3. **Hardy-Weinberg equilibrium**: Only applies to PAR regions (not valid in non-PAR due to hemizygosity in males)
+
+This pipeline can be adapted for any population by modifying the input/output paths.
+
+## Pipeline Steps
+
+1. Subset to population of interest
+2. Verify sex assignments
+3. Apply missingness and MAF filters
+4. Split pseudoautosomal regions (PAR1, PAR2, and non-PAR)
+5. Apply Hardy-Weinberg equilibrium test to PAR regions only
+6. Merge PAR and non-PAR regions
+7. Recode chromosome identifiers
+
+## Prerequisites
+
+- PLINK v1.9 or later
+- PLINK2 (for --split-par functionality)
+- R with data.table package (for chromosome recoding)
+- X chromosome PLINK files with updated sex information
+- Sample IDs for population subset
+
+## Directory Structure
+
+```bash
+# Set base directories (adjust for your system)
+WGS_QC_DIR="path/to/WGS_QC"
+POPULATION="europop"  # Change to: allpops, aapop, hispop, chnpop, etc.
+XCHR_QC_DIR="${WGS_QC_DIR}/QC_MESAproteomics_allchr/x-chromosome_qc"
+OUTPUT_DIR="${WGS_QC_DIR}/QC_MESAproteomics_allchr/final_qc_plinkfiles/${POPULATION}"
+```
+
+---
+
+# X Chromosome QC Pipeline
+
+## Step 1: Subset to population of interest
+Extract samples for the specific population using the .fam file from autosomal QC.
+
+```bash
+plink --bfile ${XCHR_QC_DIR}/allpops/x-chromosome_updated-sex \
+      --keep-fam ${OUTPUT_DIR}/${POPULATION}_sampleqc.fam \
+      --make-bed \
+      --out ${XCHR_QC_DIR}/${POPULATION}/${POPULATION}_xchr_initial
+```
+
+**Note**: Use the .fam file from the autosomal QC step (after sample filtering) to ensure consistency.
+
+## Step 2: Check sex assignments
+Verify that sex information is correct based on X chromosome heterozygosity.
+
+```bash
+plink --bfile ${XCHR_QC_DIR}/${POPULATION}/${POPULATION}_xchr_initial \
+      --check-sex \
+      --out ${XCHR_QC_DIR}/${POPULATION}/check_sex_initial
+```
+
+**Expected output**: No problems detected if sex assignments are correct.
+
+## Step 3: Apply missingness and MAF filters
+Filter variants by genotype call rate (≥98%) and minor allele frequency (≥1%).
+
+```bash
+plink --bfile ${XCHR_QC_DIR}/${POPULATION}/${POPULATION}_xchr_initial \
+      --geno 0.02 \
+      --maf 0.01 \
+      --make-bed \
+      --out ${XCHR_QC_DIR}/${POPULATION}/${POPULATION}_xchr_filtered
+```
+
+## Step 4: Verify sex after filtering
+Re-check sex assignments after variant filtering to identify any issues.
+
+```bash
+plink --bfile ${XCHR_QC_DIR}/${POPULATION}/${POPULATION}_xchr_filtered \
+      --check-sex \
+      --out ${XCHR_QC_DIR}/${POPULATION}/check_sex_postfiltered
+```
+
+## Step 5: Split pseudoautosomal regions
+Separate X chromosome into PAR1, non-PAR (X), and PAR2 regions using build 38 coordinates.
+
+```bash
+plink2 --bfile ${XCHR_QC_DIR}/${POPULATION}/${POPULATION}_xchr_filtered \
+       --split-par b38 \
+       --make-bed \
+       --out ${XCHR_QC_DIR}/${POPULATION}/split-par/${POPULATION}_xchr_split
+```
+
+**Result**: Variants are recoded as PAR1, X (non-PAR), or PAR2 based on genomic position.
+
+## Step 6: Apply Hardy-Weinberg test to PAR regions only
+HWE is only meaningful in PAR regions where both males and females are diploid.
+
+```bash
+plink2 --bfile ${XCHR_QC_DIR}/${POPULATION}/split-par/${POPULATION}_xchr_split \
+       --chr PAR1,PAR2 \
+       --hwe 1e-6 \
+       --make-bed \
+       --out ${XCHR_QC_DIR}/${POPULATION}/split-par/${POPULATION}_par_hwe
+```
+
+## Step 7: Extract non-PAR region (X only)
+Create a separate file for non-PAR regions (which did not undergo HWE filtering).
+
+```bash
+plink2 --bfile ${XCHR_QC_DIR}/${POPULATION}/split-par/${POPULATION}_xchr_split \
+       --chr X \
+       --make-bed \
+       --out ${XCHR_QC_DIR}/${POPULATION}/split-par/${POPULATION}_nonpar
+```
+
+## Step 8: Merge PAR and non-PAR regions
+Combine HWE-filtered PAR regions with non-PAR regions.
+
+```bash
+plink --bfile ${XCHR_QC_DIR}/${POPULATION}/split-par/${POPULATION}_par_hwe \
+      --bmerge ${XCHR_QC_DIR}/${POPULATION}/split-par/${POPULATION}_nonpar \
+      --allow-extra-chr \
+      --make-bed \
+      --out ${XCHR_QC_DIR}/${POPULATION}/split-par/${POPULATION}_xchr_merged
+```
+
+## Step 9: Recode chromosome identifiers
+Convert PAR1 and PAR2 labels back to chromosome 23 (X) for compatibility.
+
+```r
+library(data.table)
+
+# Read .bim file
+bimfile <- fread(
+  paste0(WGS_QC_DIR, "/QC_MESAproteomics_allchr/x-chromosome_qc/", 
+         POPULATION, "/split-par/", POPULATION, "_xchr_merged.bim"),
+  header = FALSE, 
+  sep = "\t"
+)
+
+# Recode PAR1 and PAR2 as chromosome 23 (X)
+bimfile[V1 %in% c("PAR1", "PAR2"), V1 := "23"]
+
+# Write recoded .bim file
+fwrite(
+  bimfile,
+  paste0(WGS_QC_DIR, "/QC_MESAproteomics_allchr/x-chromosome_qc/",
+         POPULATION, "/split-par/", POPULATION, "_xchr_merged_recoded.bim"),
+  col.names = FALSE,
+  sep = "\t"
+)
+```
+
+**Alternative (bash)**: Replace the original .bim file with the recoded version:
+
+```bash
+# After running the R script above
+mv ${XCHR_QC_DIR}/${POPULATION}/split-par/${POPULATION}_xchr_merged_recoded.bim \
+   ${XCHR_QC_DIR}/${POPULATION}/split-par/${POPULATION}_xchr_merged.bim
+```
+
+## Step 10: Create final X chromosome files
+Generate final PLINK files in the output directory.
+
+```bash
+plink --bfile ${XCHR_QC_DIR}/${POPULATION}/split-par/${POPULATION}_xchr_merged \
+      --make-bed \
+      --out ${OUTPUT_DIR}/${POPULATION}_X-chr
+```
+
+**Final output**: `${POPULATION}_X-chr.bed/bim/fam` files ready for merging with autosomal variants.
+
+---
+
+# Population-Specific Adaptation
+
+To adapt this pipeline for different populations, modify the `POPULATION` variable:
+
+```bash
+# European ancestry
+POPULATION="europop"
+
+# African American ancestry
+POPULATION="aapop"
+
+# Hispanic ancestry
+POPULATION="hispop"
+
+# Chinese ancestry
+POPULATION="chnpop"
+
+# All populations combined
+POPULATION="allpops"
+```
+
+Then run all steps with the updated population identifier. Ensure that:
+
+1. Input files exist for the specified population
+2. Sex information has been properly updated before starting
+3. Sample IDs match between autosomal and X chromosome files
+
+---

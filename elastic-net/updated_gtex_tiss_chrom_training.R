@@ -7,14 +7,10 @@ argv <- commandArgs(trailingOnly = TRUE)
 pop <- argv[1]
 chrom <- argv[2]
 
-#tiss <- argv[1]
-#chrom <- argv[2]
-
 snp_annot_file <- "~/Elasticnet/" %&% pop %&% "/data/split_snp/snp.annot.chr" %&% chrom %&% ".txt.gz"
 gene_annot_file <- "~/Elasticnet/input/geneannotation.txt"
 genotype_file <- "~/Elasticnet/" %&% pop %&% "/data/split_genotype/imputing/genotype.impute.chr" %&% chrom %&% ".txt.gz"
 expression_file <- "~/Elasticnet/" %&% pop %&% "/data/geneexpression.txt"
-#covariates_file <- "../output/covariates.txt"
 prefix <- "~/Elasticnet/" %&% pop %&% "/cis-keepam-harmpost"
 
 
