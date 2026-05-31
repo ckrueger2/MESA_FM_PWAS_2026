@@ -1,0 +1,119 @@
+---
+title: "Apply MESA-Trained PWAS Models to AoU Phenotypes"
+author: "Claudia Krueger"
+date: "2025-07-10"
+output: html_document
+---
+
+**Build SNP Lists to Filter AoU Summary Statistics by**
+```{bash}
+#!/bin/bash
+
+#code adapted from https://github.com/idgregga7100/AoU_to_PrediXcan/tree/main
+
+#make new directory
+mkdir ~/aou_predixcan/mesa_gtex_ref
+
+#open tar file
+tar -xf ~/Data/predictdb_models/elastic-net-with-mesa.tar -C ~/
+
+#directory to .db files
+models=~/mesa_dbfiles/*.db
+
+#.db to .csv
+for model in ${models}
+do
+  echo ${model}
+  #extract just the filename without path and extension
+  basename=$(basename "${model}" .db)
+  sqlite3 -header -csv "${model}" 'select * from weights;' > ~/aou_predixcan/mesa_gtex_ref/${basename}.csv
+done
+
+#merge the SNPs
+Rscript ~/aou_predixcan/predixcan_format/01union_of_snps.R
+
+#download full rsid file
+wget https://ftp.ncbi.nlm.nih.gov/snp/organisms/human_9606_b151_GRCh38p7/VCF/All_20180418.vcf.gz
+
+#unzip file
+gunzip ~/All_20180418.vcf.gz
+
+#remove meta data rows
+awk '!/^##/' ~/All_20180418.vcf > ~/no_meta.vcf
+
+#keep only rows that are also in predixcan_models_varids-effallele.txt
+awk 'NR==FNR {split($1, parts, ":"); chr=parts[1]; position=parts[2]; gsub(/^chr/, "", chr); lookup[chr":"position]++; next} /^#/ {print; next} {chr_pos = $1":"$2; if (chr_pos in lookup) print}' ~/aou_predixcan/predixcan_models_varids-effallele.txt ~/aou_predixcan/no_meta.vcf > ~/aou_predixcan/filtered_no_meta.vcf
+
+#keep only first 3 columns
+cut -f1-3 ~/aou_predixcan/filtered_no_meta.vcf > ~/aou_predixcan/gtex_rsid_ref_w_header.vcf
+
+#rename column headers
+sed '1s/#CHROM\tPOS\tID/CHR\tPOS\trsID/' ~/aou_predixcan/gtex_rsid_ref_w_header.vcf > ~/aou_predixcan/gtex_rsid_ref.vcf
+
+#rezip files
+gzip ~/gtex_rsid_ref.vcf
+gzip ~/All_20180418.vcf
+
+#to send to All of Us bucket
+gsutil -m cp -v ~/gtex_rsid_ref.vcf <paste_your_bucket_here>/data/
+```
+
+**01union_of_snps.R**
+```{r}
+library(data.table)
+library(dplyr)
+library(stringr)
+
+files <- list.files('~/aou_predixcan/mesa_gtex_ref', pattern = '.*\\.csv$')
+
+#initialize dataframe
+result <- data.frame(rsid = character(), chr = character(), pos = character(), rsid = character())
+
+for(file in files) {
+  cat(file, "\n")
+  f <- fread(paste0('~/aou_predixcan/mesa_gtex_ref/', file))
+  #extract chr and pos from rsid (format: chr10_78827_C_T_b38)
+  chr_pos <- f %>%
+    select(rsid, rsid) %>%
+    unique() %>%
+    mutate(
+      chr = str_extract(rsid, "chr\\d+"),
+      pos = str_extract(rsid, "(?<=chr\\d{1,2}_)\\d+")
+    ) %>%
+    select(rsid, chr, pos, rsid)
+  
+  #combine with result
+  result <- rbind(result, chr_pos)
+}
+
+#remove duplicates and clean
+nrow(result)
+result <- unique(result)
+nrow(result)
+result <- result[!is.na(result$chr) & !is.na(result$pos) & result$rsid != "", ]
+nrow(result)
+
+#underscores to semicolons
+result$rsid <- gsub("_", ":", result$rsid)
+
+#remove _b38
+result$rsid <- substr(result$rsid, 1, nchar(result$rsid) - 4)
+
+#rename columns
+colnames(result) <- c("varID", "chr", "pos")
+
+#save result
+fwrite(result, '~/aou_predixcan/predixcan_models_varids-effallele.txt', quote = FALSE, row.names = FALSE)
+```
+
+**Run https://github.com/ckrueger2/mesa_pwas**
+- Hyperlipidemia (EM_239)
+- Essential hypertension (CV_401.1)
+- Sleep apnea (NS_333.1)
+- Type 2 diabetes (EM_202.2)
+- Asthma (RE_475)
+- Chronic kidney disease (GU_582.2)
+- Overweight and obesity (EM_236)
+- Osteoarthritis (MS_708)
+- Major depressive disorder (MB_286.2)
+- Anemia (BI_164)

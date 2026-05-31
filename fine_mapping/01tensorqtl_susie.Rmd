@@ -1,0 +1,607 @@
+---
+title: "TensorQTL Cis and Trans Susie Fine-Mapping"
+author: "Claudia Krueger"
+date: "2025-07-01"
+output: html_document
+---
+
+**Create Dummy Covariate File**
+```{python}
+import pandas as pd
+import numpy as np
+
+#get fids from plink file
+pheno_file = "~/ancestry_specific_folder/tensor_lm_table.bed.gz"
+with pd.read_csv(pheno_file, sep='\t', iterator=True, chunksize=1) as reader:
+    header = next(reader)
+    sample_ids = header.columns[4:].tolist()
+
+#create column of 1s
+dummy_cov = pd.DataFrame({'intercept': np.ones(len(sample_ids))}, index=sample_ids)
+
+#save covariates; transposed
+dummy_cov.T.to_csv("~/ancestry_specific_folder/dummy_covariates.txt", sep='\t')
+```
+
+**Create Cis Location File**
+```{r}
+library(data.table)
+library(dplyr)
+
+data <- fread("~/ancestry_specific_folder/empirical/0.05cis_qtls.tsv", header=TRUE)
+
+#filter by qvalue phenotype ids
+oids <- data %>% select(phenotype_id)
+locations <- fread("~/protein_locations/allchr_protein_location_file")
+cis_locations <- left_join(oids, locations, by=c("phenotype_id" = "OlinkID"))
+
+#save
+write.table(cis_locations, "~/ancestry_specific_folder/0.05cis_locations.tsv", row.names = FALSE, quote=FALSE, col.names=TRUE, sep="\t")
+```
+
+**Cis Fine-Mapping**
+```{bash}
+python3 -m tensorqtl ~/ancestry_specific_folder/ancestry_final ~/ancestry_specific_folder/tensor_lm_table.bed.gz ~/ancestry_specific_folder/tensor_susie/0.05cis  --cis_output ~/ancestry_specific_folder/tensorqtl/empirical/0.05cis_qtls.tsv --covariates ~/ancestry_specific_folder/dummy_covariates.txt --mode cis_susie --seed 123
+```
+
+**Unpack Cis Susie Pickle**
+```{python}
+import pandas as pd
+import pickle
+
+#load the pickle file
+with open("~/ancestry_specific_folder/tensor_susie/0.05cis.SuSiE.pickle", 'rb') as f:
+    susie_results = pickle.load(f)
+
+#create a list to store PIP data from all proteins
+all_pip_data = []
+
+#create a list to store credible set data
+all_cs_data = []
+
+#loop through each protein in the results
+for protein_id, protein_data in susie_results.items():
+    if 'pip' in protein_data:
+        #get PIP dataframe and reset index to make variant_id a column
+        pip_df = protein_data['pip'].reset_index()
+        
+        #add protein_id column
+        pip_df['protein_id'] = protein_id
+        
+        #reorder columns to put protein_id first
+        pip_df = pip_df[['protein_id', 'variant_id', 'pip', 'af']]
+        
+        #append to the list
+        all_pip_data.append(pip_df)
+    
+    #extract credible sets
+    if 'sets' in protein_data and 'cs' in protein_data['sets']:
+        for cs_label, variant_indices in protein_data['sets']['cs'].items():
+            #get the variants in this credible set
+            if 'pip' in protein_data:
+                variants = protein_data['pip'].index.values
+                for idx in variant_indices:
+                    if idx < len(variants):
+                        cs_entry = {
+                            'protein_id': protein_id,
+                            'cs_label': cs_label,
+                            'variant_id': variants[idx],
+                        }
+                        all_cs_data.append(cs_entry)
+
+#combine all PIPs into one data frame
+if all_pip_data:
+    combined_pip_df = pd.concat(all_pip_data, ignore_index=True)
+    
+    #save file
+    combined_pip_df.to_csv("~/ancestry_specific_folder/tensor_susie/0.05cis_pip_values.tsv", sep='\t', index=False)
+
+#create credible sets dataframe
+if all_cs_data:
+    cs_df = pd.DataFrame(all_cs_data)
+    
+    #save file
+    cs_df.to_csv("~/ancestry_specific_folder/tensor_susie/0.05credible_sets.tsv", sep='\t', index=False)
+```
+
+**Combine Cis Credible Sets and PIP Files**
+```{python}
+import pandas as pd
+
+#read files
+pip_df = pd.read_csv("~/ancestry_specific_folder/tensor_susie/0.05cis_pip_values.tsv", sep='\t')
+cs_df = pd.read_csv("~/ancestry_specific_folder/tensor_susie/0.05cis_credible_sets.tsv", sep='\t')
+
+#merge the credible sets with PIP values
+merged_cs_df = cs_df.merge(
+    pip_df[['protein_id', 'variant_id', 'pip', 'af']], 
+    on=['protein_id', 'variant_id'], 
+    how='left'
+)
+
+#save the merged data to a new file
+merged_cs_df.to_csv("~/ancestry_specific_folder/tensor_susie/0.05cis_finemap.tsv", sep='\t', index=False)
+```
+
+**Create Trans Location File**
+```{r}
+library(dplyr)
+library(data.table)
+library(tidyr)
+
+#read in file
+data <- fread("~/ancestry_specific_folder/tensorqtl/trans/trans_fdr0.05.tsv ")
+
+#ensure correct column names
+colnames(data) <- c("variant_id","phenotype_id","pval","b","b_se","r2","af","beta_shape1","beta_shape2","true_df","pval_true_dof","pval_perm","pval_beta","qval","pval_nominal_threshold")
+
+#isolate chr, pos, allele components
+split <- data %>%
+  separate(variant_id, into=c("chr", "pos", "A1", "A2"), sep=":")
+
+#keep only needed columns
+filtered <- split %>%
+  select(phenotype_id, chr, pos)
+
+#save files
+write.table(filtered, "~/ancestry_specific_folder/0.05trans_locations.tsv", col.names=TRUE, row.names=FALSE, quote=FALSE, sep="\t")
+```
+
+**Trans Fine-Mapping**
+```{bash}
+#!/bin/bash
+
+#paths
+PLINK_PATH="~/ancestry_specific_folder/ancestry_final"
+BED_PATH="~/ancestry_specific_folder/tensor_lm_table.bed.gz"
+COV_PATH="~/ancestry_specific_folder/dummy_covariates.txt"
+LOC_FILE="~/ancestry_specific_folder/0.05trans_locations.tsv"
+OUT_DIR="~/ancestry_specific_folder/tensor_susie/0.05trans"
+ERROR_FILE="~/ancestry_specific_folder/tensor_susie/trans_errors.tsv"
+
+#create directories
+mkdir -p "$OUT_DIR"
+mkdir -p "$OUT_DIR/0.05phenotype_subsets"
+
+#error log
+> "$ERROR_FILE"
+echo -e "phenotype_id\tchromosome\terror_message" > "$ERROR_FILE"
+
+#extract header from locations file
+HEADER=$(head -1 "$LOC_FILE")
+
+#extract unique phenotypes
+echo "Extracting unique phenotypes..."
+unique_phenotypes=$(awk 'NR>1 {print $1}' "$LOC_FILE" | sort | uniq)
+
+#process one phenotype at a time
+for phenotype in $unique_phenotypes; do
+    echo "Processing $phenotype..."
+    
+    #temp file with all locations (X to 23)
+    TEMP_FILE=$(mktemp)
+    awk -v phenotype="$phenotype" '
+        NR>1 && $1==phenotype {
+            # Convert X to chr23 in the chromosome column
+            if ($2=="X" || $2=="chrX") {
+                $2="chr23"
+            }
+            print $0
+        }
+    ' "$LOC_FILE" > "$TEMP_FILE"
+    
+    #unique chromosomes
+    unique_chromosomes=$(awk '{print $2}' "$TEMP_FILE" | sort | uniq)
+    
+    #process each chromosome separately
+    for chromosome in $unique_chromosomes; do
+        echo "  Processing chromosome $chromosome..."
+        
+        #create phenotype-chromosome specific subset file
+        CHR_SUBSET_FILE="$OUT_DIR/0.05phenotype_subsets/${phenotype}_${chromosome}_locations.tsv"
+        
+        #add header to the subset file
+        echo -e "phenotype_id\tchr\tpos" > "$CHR_SUBSET_FILE"
+
+        #add rows for this phenotype and chromosome, creating the COMBINED ID format
+        awk -v phenotype="$phenotype" -v chromosome="$chromosome" '
+            $2==chromosome {
+                #output only phenotype_id, chr, and pos
+                print $1 "\t" $2 "\t" $3
+            }
+        ' "$TEMP_FILE" >> "$CHR_SUBSET_FILE"
+        
+        #temporary output directory
+        TMP_OUT_DIR=$(mktemp -d)
+        
+        #temporary file for error output
+        ERROR_CAPTURE=$(mktemp)
+        
+        #run tensorqtl
+        python3 -m tensorqtl \
+            "$PLINK_PATH" \
+            "$BED_PATH" \
+            "$TMP_OUT_DIR/output" \
+            --covariates "$COV_PATH" \
+            --susie_loci "$CHR_SUBSET_FILE" \
+            --mode trans_susie \
+            --batch_size 10000 \
+            --pval_threshold 1 \
+            --maf_threshold 0.01 \
+            --window 1000000 \
+            --seed 123 > /dev/null 2> "$ERROR_CAPTURE"
+        
+        #check if there was an error
+        if [ $? -ne 0 ]; then
+            #get error message
+            ERROR_MSG=$(cat "$ERROR_CAPTURE" | tr '\n' ' ' | tr '\t' ' ')
+            
+            #log the error to the error file
+            echo -e "$phenotype\t$chromosome\t$ERROR_MSG" >> "$ERROR_FILE"
+        else
+            #copy only the result files to final directory
+            mkdir -p "$OUT_DIR/${phenotype}_${chromosome}"
+            
+            #move any non-.log files
+            find "$TMP_OUT_DIR" -type f -not -name "*.log" -exec cp {} "$OUT_DIR/${phenotype}_${chromosome}/" \;
+        fi
+        
+        # Clean up temporary files and directories
+        rm "$ERROR_CAPTURE"
+        rm -rf "$TMP_OUT_DIR"
+    done
+    
+    # Clean up temporary file
+    rm "$TEMP_FILE"
+    
+    echo "Completed all chromosomes for $phenotype"
+    echo "----------------------------------------"
+done
+
+echo "All phenotypes and chromosomes processed"
+```
+
+**Unpack Trans Susie Pickles**
+```{python}
+import pandas as pd
+import pickle
+import os
+import glob
+import re
+import traceback
+
+#root directory and pattern
+root_dir = "~/ancestry_specific_folder/tensor_susie/0.05trans"
+pickle_pattern = os.path.join(root_dir, "0.05_OID*_chr*/output.SuSiE.pickle")
+all_pickle_files = glob.glob(pickle_pattern)
+
+#error tracking
+error_log = []
+failed_phenotypes = []
+
+#process each file
+print(f"Processing {len(all_pickle_files)} files...")
+
+for pickle_path in all_pickle_files:
+    try:
+        #extract OID and chromosome
+        match = re.search(r'pq_OID(\d+)_chr(\d+)', pickle_path)
+        if not match:
+            error_log.append(f"Could not extract OID and chromosome from path: {pickle_path}")
+            failed_phenotypes.append(os.path.basename(pickle_path))
+            continue
+            
+        oid, chrom = match.group(1), match.group(2)
+
+        #define output directory and filenames
+        output_dir = os.path.dirname(pickle_path)
+        pip_output_path = os.path.join(output_dir, f"OID{oid}_chr{chrom}_trans_pips.tsv")
+        cs_output_path = os.path.join(output_dir, f"OID{oid}_chr{chrom}_trans_cs.tsv")
+        finemap_output_path = os.path.join(output_dir, f"OID{oid}_chr{chrom}_finemap.tsv")
+        
+        #load the pickle file
+        with open(pickle_path, 'rb') as f:
+            trans_susie_results = pickle.load(f)
+
+        #create lists to store PIP data and credible sets
+        all_pip_data = []
+        all_cs_data = []
+
+        #process the TensorQTL trans-SuSiE output
+        for protein_id, protein_data in trans_susie_results.items():
+            if isinstance(protein_data, dict):
+                #extract PIP values
+                if 'pip' in protein_data:
+                    pip_df = protein_data['pip']
+                    
+                    #handle different PIP data structures
+                    if isinstance(pip_df, pd.DataFrame):
+                        pip_df = pip_df.reset_index()
+                    elif isinstance(pip_df, pd.Series):
+                        pip_df = pip_df.reset_index(name='pip')
+                    
+                    #add protein_id column
+                    pip_df['protein_id'] = protein_id
+                    
+                    #ensure we have the right columns
+                    if 'variant_id' not in pip_df.columns and 'index' in pip_df.columns:
+                        pip_df = pip_df.rename(columns={'index': 'variant_id'})
+                    
+                    #add allele frequency if available
+                    if 'af' in pip_df.columns:
+                        pip_df = pip_df[['protein_id', 'variant_id', 'pip', 'af']]
+                    else:
+                        pip_df = pip_df[['protein_id', 'variant_id', 'pip']]
+                    
+                    all_pip_data.append(pip_df)
+                
+                #extract credible sets
+                if 'sets' in protein_data and 'cs' in protein_data['sets']:
+                    for cs_label, variant_indices in protein_data['sets']['cs'].items():
+                        if 'pip' in protein_data:
+                            variants = None
+                            pip_data = protein_data['pip']
+                            
+                            if isinstance(pip_data, (pd.DataFrame, pd.Series)):
+                                variants = pip_data.index.values
+                            
+                            if variants is not None:
+                                for idx in variant_indices:
+                                    if idx < len(variants):
+                                        cs_entry = {
+                                            'protein_id': protein_id,
+                                            'cs_label': cs_label,
+                                            'variant_id': variants[idx],
+                                        }
+                                        all_cs_data.append(cs_entry)
+
+        #create and save PIP dataframe
+        if all_pip_data:
+            combined_pip_df = pd.concat(all_pip_data, ignore_index=True)
+            combined_pip_df.to_csv(pip_output_path, sep='\t', index=False)
+        else:
+            combined_pip_df = None
+
+        #create and save credible sets dataframe
+        if all_cs_data:
+            cs_df = pd.DataFrame(all_cs_data)
+            cs_df.to_csv(cs_output_path, sep='\t', index=False)
+        else:
+            cs_df = None
+
+        #create the merged finemap file if both PIP and CS data exist
+        if combined_pip_df is not None and cs_df is not None:
+            pip_columns = ['protein_id', 'variant_id', 'pip']
+            if 'af' in combined_pip_df.columns:
+                pip_columns.append('af')
+            
+            merged_cs_df = cs_df.merge(
+                combined_pip_df[pip_columns],
+                on=['protein_id', 'variant_id'],
+                how='left'
+            )
+            merged_cs_df.to_csv(finemap_output_path, sep='\t', index=False)
+            print(finemap_output_path)
+    
+    except Exception as e:
+        error_msg = f"Error processing OID{oid} Chr{chrom}: {str(e)}\n{traceback.format_exc()}"
+        error_log.append(error_msg)
+        failed_phenotypes.append(f"OID{oid}_chr{chrom}")
+
+#write error log if there are any errors
+if error_log:
+    log_dir = "/home/claudia/susie/ancestry"
+    os.makedirs(log_dir, exist_ok=True)
+    error_log_file = os.path.join(log_dir, "susie_errors.log")
+    
+    with open(error_log_file, 'w') as f:
+        f.write("SuSiE Processing Errors\n")
+        f.write(f"Failed phenotypes: {len(failed_phenotypes)}\n\n")
+        f.write("="*80 + "\n\n")
+        
+        for i, error_entry in enumerate(error_log):
+            f.write(f"Error {i+1}:\n{error_entry}\n\n" + "-"*50 + "\n\n")
+        
+        f.write("Failed phenotypes:\n")
+        for phenotype in failed_phenotypes:
+            f.write(f"- {phenotype}\n")
+    
+    print(f"Finished with {len(failed_phenotypes)} errors. See log: {error_log_file}")
+else:
+    print("All files processed successfully.")
+```
+
+**Ensure Only Unique Credible Sets are Kept for Each File**
+- If there are overlapping SNP/Protein pairs, keep the first one
+Example:
+protein_id	cs_label	variant_id	pip	af
+OID20079_1	L1	chr4:16865080:G:A	0.5	0.012204724
+OID20079_1	L1	chr4:16871683:G:A	0.5	0.012204724
+OID20079_2	L1	chr4:16865080:G:A	0.5	0.012204724
+OID20079_2	L1	chr4:16871683:G:A	0.5	0.012204724
+to:
+protein_id	cs_label	variant_id	pip	af
+OID20079_1	L1	chr4:16865080:G:A	0.5	0.012204724
+OID20079_1	L1	chr4:16871683:G:A	0.5	0.012204724
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(stringr)
+
+#root directory
+root_dir <- "/home/claudia/tensor_susie/all_race/0.05trans"
+
+#find all finemap.tsv files
+finemap_files <- list.files(path = root_dir, pattern = "*finemap.tsv$", recursive = TRUE, full.names = TRUE)
+cat("Found", length(finemap_files), "finemap.tsv files\n")
+
+#create an error log data frame
+error_log <- data.frame(
+  file_path = character(),
+  error_message = character(),
+  timestamp = character(),
+  stringsAsFactors = FALSE
+)
+
+#process each file
+for (file_path in finemap_files) {
+  #extract file info for reporting
+  file_name <- basename(file_path)
+  dir_name <- basename(dirname(file_path))
+  output_path <- file.path(dirname(file_path), paste0(tools::file_path_sans_ext(file_name), "_condensed.tsv"))
+  
+  cat("\nProcessing:", dir_name, "/", file_name, "\n")
+  
+  #read the file
+  tryCatch({
+    finemap_data <- read.table(file_path, header = TRUE, sep = "\t", stringsAsFactors = FALSE)
+    
+    if (nrow(finemap_data) == 0) {
+      cat("  Empty file, skipping\n")
+      #add to error log
+      error_log <- rbind(error_log, data.frame(
+        file_path = file_path,
+        error_message = "Empty file",
+        timestamp = format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
+        stringsAsFactors = FALSE
+      ))
+      next
+    }
+      
+    #keep the first occurrence of each unique variant pattern
+    first_occurrences <- finemap_data %>%
+      group_by(variant_id) %>%
+      slice(1) %>%
+      ungroup() %>%
+      arrange(as.numeric(str_extract(gene_id, "\\d+$"))) %>%
+      select(gene_id, cs_label, variant_id, pip, af)
+
+    
+    #write the condensed data to file
+    write.table(first_occurrences, file = output_path, sep = "\t", 
+                row.names = FALSE, quote = FALSE)
+    cat("Condensed file saved to:", output_path, "\n")
+    
+  }, error = function(e) {
+    error_message <- e$message
+    cat("ERROR processing file:", error_message, "\n")
+    
+    #add to error log
+    error_log <- rbind(error_log, data.frame(
+      file_path = file_path,
+      error_message = error_message,
+      timestamp = format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
+      stringsAsFactors = FALSE
+    ))
+  })
+}
+
+#write all errors to a single file
+error_log_path <- file.path(root_dir, "processing_errors.tsv")
+write.table(error_log, file = error_log_path, sep = "\t", row.names = FALSE, quote = FALSE)
+cat("\nError log saved to:", error_log_path, "\n")
+cat("Total errors:", nrow(error_log), "\n")
+```
+
+**Combine Individual Protein Fine-Mapped Files into One**
+```{r}
+library(dplyr)
+library(stringr)
+
+#root directory where condensed finemap files are located
+root_dir <- "~/ancestry_specific_folder/tensor_susie/0.05trans"
+
+#find all condensed finemap files
+condensed_files <- list.files(path = root_dir, pattern = "*_condensed.tsv$", recursive = TRUE, full.names = TRUE)
+cat("Found", length(condensed_files), "condensed finemap files\n")
+
+#process all files and combine using rbind
+all_data <- list()
+for (i in 1:length(condensed_files)) {
+  file <- condensed_files[i]
+  tryCatch({
+    #read the file
+    data <- read.table(file, header = TRUE, sep = "\t", stringsAsFactors = FALSE)
+    
+    #keep only the columns we want
+    if (all(c("protein_id", "cs_label", "variant_id", "pip", "af") %in% colnames(data))) {
+      data <- data[, c("protein_id", "cs_label", "variant_id", "pip", "af")]
+      all_data[[i]] <- data
+      cat("Added data from:", file, "\n")
+    } else {
+      cat("File missing required columns, skipping:", file, "\n")
+    }
+  }, error = function(e) {
+    cat("ERROR processing file:", file, ":", e$message, "\n")
+  })
+}
+
+#combine all successful results
+combined_results <- do.call(rbind, all_data)
+
+#count unique protein_id and cs_label pairs
+protein_cs_pairs <- combined_results %>%
+  select(protein_id, cs_label) %>%
+  distinct()
+
+num_unique_pairs <- nrow(protein_cs_pairs)
+
+#write the combined results to a file
+combined_file_path <- file.path("~/ancestry_specific_folder/tensor_susie/", "0.05trans_finemap.tsv")
+write.table(combined_results, file = combined_file_path, sep = "\t", row.names = FALSE, quote = FALSE)
+```
+
+**Filter Final File**
+- Group by OID_#, credible set label, and chromosome to isolate credible sets
+- Keep only credible sets with greater than or equal to 0.9 coverage
+- Relabel credible set labels to make each unique within OID group
+- Remove _# after OID#####
+```{r}
+library(dplyr)
+library(data.table)
+library(stringr)
+
+trans_condensed <- fread("~/ancestry_specific_folder/tensor_susie/0.05trans_finemap.tsv", header=TRUE)
+colnames(trans_condensed) <- c("gene_id", "cs_label", "variant_id", "pip", "af")
+
+#add chr column
+trans_condensed$chr <- str_extract(trans_condensed$variant_id, "chr\\d+")
+trans_condensed$chr[is.na(trans_condensed$chr)] <- "chr23"
+trans_condensed$base_gene_id <- str_extract(trans_condensed$gene_id, "^[^_]+")
+
+#keep only credible sets that add to .9 (conservative filter)
+trans_filtered <- trans_condensed %>%
+  group_by(gene_id, cs_label, chr) %>%
+  filter(sum(pip) >= 0.9) %>%
+  ungroup() %>%
+  mutate(
+    #create a unique identifier for each credible set
+    cs_combo = paste(gene_id, cs_label, chr, sep = "_"),
+    #assign ID based on first appearance order
+    cs_id = as.numeric(factor(cs_combo, levels = unique(cs_combo)))
+  ) %>%
+  select(-cs_combo)
+
+#relabel credible sets to make unique cs_label per protein
+trans_cs_relabel <- trans_filtered %>%
+  mutate(original_order = row_number()) %>%
+  group_by(base_gene_id) %>%
+  mutate(
+    #assign sequential L numbers based on unique cs_id values
+    new_cs_label = paste0("L", dense_rank(cs_id))
+  ) %>%
+  ungroup() %>%
+  arrange(original_order) %>%
+  select(-cs_label, -original_order) %>%
+  rename(cs_label = new_cs_label)
+
+#rearrange
+trans_reorder <- trans_cs_relabel %>%
+  select(base_gene_id, cs_label, variant_id, pip)
+colnames(trans_reorder) <- c("gene_id", "cs_label", "variant_id", "pip")
+
+#save
+write.table(trans_reorder, "~/ancestry_specific_folder/tensor_susie/0.05trans_finemap_edited.tsv", col.names = TRUE, row.names = FALSE, sep = "\t", quote = FALSE)
+```
+

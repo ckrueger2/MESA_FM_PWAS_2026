@@ -1,0 +1,100 @@
+---
+title: "Tensor QTL Genotype and Phenoptype Formatting"
+author: "Claudia Krueger"
+date: "2025-05-19"
+output: html_document
+---
+
+**Genotype Formatting**
+```{bash}
+#remove 10 people with missing covariate information
+plink --bfile ~/ancestry_specific_folder/new_plink_files/final_qc --remove ~/ancestry_specific_folder/new_plink_files/ten_fids_remove.fam --make-bed --out ~/ancestry_specific_folder/new_plink_files/final_qc_minus_ten
+
+plink --bfile ~/xchrom/ancestry_specific_folder/new_plink_files/final_qc --remove ~/ancestry_specific_folder/new_plink_files/ten_fids_remove.fam --make-bed --out ~/xchrom/ancestry_specific_folder/new_plink_files/final_qc_minus_ten
+
+#apply geno 0.02 and maf 0.01 post filtering 10 individuals
+plink --bfile ~/ancestry_specific_folder/new_plink_files/final_qc_minus_ten --geno 0.02 --maf 0.01 --make-bed --out ~/ancestry_specific_folder/new_plink_files/final_qc_minus_ten_filtered
+
+plink --bfile ~/xchrom/ancestry_specific_folder/new_plink_files/final_qc_minus_ten --geno 0.02 --maf 0.01 --make-bed --out ~/xchrom/ancestry_specific_folder/new_plink_files/final_qc_minus_ten_filtered
+```
+
+**Combine autosomal and chr 23 genotype files**
+```{bash}
+#check sex
+plink --bfile ~/xchrom/ancestry_specific_folder/new_plink_files/final_qc_minus_ten_filtered --check-sex --out ~/xchrom/ancestry_specific_folder/new_plink_files/check_sex
+
+#update sex
+plink --bfile ~/xchrom/ancestry_specific_folder/new_plink_files/final_qc_minus_ten_filtered --update-sex ~/xchrom/ancestry_specific_folder/new_plink_files/check_sex.sexcheck --make-bed --out ~/xchrom/ancestry_specific_folder/new_plink_files/sex_updated_xchr
+
+#merge files
+plink --bfile ~/ancestry_specific_folder/new_plink_files/final_qc_minus_ten_filtered --bmerge ~/xchrom/ancestry_specific_folder/new_plink_files/sex_updated_xchr --make-bed --out ~/ancestry_specific_folder/new_plink_files/merged_auto_x
+
+#make plink2 files, adding additional check to ensure geno 0.02 and maf 0.01
+plink2 --bfile ~/ancestry_specific_folder/new_plink_files/merged_auto_x --output-chr chr26 --geno 0.02 --maf 0.01 --make-pgen --out ~/ancestry_specific_folder/new_plink_files/ancestry_final
+```
+
+**Phenotype Formatting**
+```{r}
+#read in files
+csv <- fread("~/ancestry_specific_folder/residmat_table")
+#csv <- read.csv("/home/matt/2024-11-12_TOPMed_MESA_Proteomics_QC/allpops/data/allpops_average_adjusted_prot.csv")
+
+demographic <- fread("~/ancestry_specific_folder/protein_sidno_data", header = TRUE)
+
+#filter columns
+filtered_demographic <- demographic %>%
+  filter(demographic$sidno %in% (csv$sidno))
+
+#isolate ID columns
+fid_sidno_snp <- select(filtered_demographic, "FID", "sidno")
+fid_sidno_snp <- unique(fid_sidno_snp)
+
+#add sidno ids based on corresponding smp
+residmat_sidno <- left_join(fid_sidno_snp, csv, by=c("sidno"))
+residmat_fid <- residmat_sidno[, -c(2)]
+
+#transpose and format
+adjusted_residmat <- t(residmat_fid[, -1])
+colnames(adjusted_residmat) <- residmat_fid$FID
+adjusted_residmat <- as.data.table(adjusted_residmat)
+adjusted_residmat$oids<- colnames(residmat_fid[, -1])
+new_residmat <- adjusted_residmat %>%
+  select(oids, everything())
+
+new_residmat <- new_residmat %>%
+  select(oids, sort(names(.)[-1]))
+
+#save file
+write.table(new_residmat, "~/ancestry_specific_folder/lm_table", row.names=FALSE, col.names=TRUE, sep="\t", quote=FALSE)
+
+#read in files
+levels <- fread("~/ancestry_specific_folder/lm_table")
+locations <- fread("~/protein_locations/allchr_protein_location_file")
+
+#format columns
+joined <- left_join(locations, levels, by=c("OlinkID"="oids"), keep=TRUE)
+joined <- joined %>% select(2:ncol(joined))
+colnames(joined)[1] = "#chr"
+colnames(joined)[2] = "start"
+colnames(joined)[3] = "end"
+colnames(joined)[4] = "gene_id"
+
+joined$"#chr" <- gsub("^chr", "", joined$"#chr")
+
+#convert chromosome column to integer for proper sorting
+joined$"#chr" <- as.integer(joined$"#chr")
+
+#sort by chromosome and position (start)
+sorted_joined <- joined[order(joined$"#chr", joined$start, joined$end), ]
+
+#add the "chr" prefix back
+sorted_joined$"#chr" <- paste("chr", sorted_joined$"#chr", sep = "")
+sorted_joined$"#chr" <- as.vector(sorted_joined$"#chr")
+
+#save file
+write.table(sorted_joined, "~/ancestry_specific_folder/tensor_lm_table.bed", col.names=TRUE, row.names=FALSE, quote=FALSE, sep="\t")
+
+#gzip file for tensorQTL input
+system("gzip -f ~/ancestry_specific_folder/tensor_lm_table.bed")
+```
+

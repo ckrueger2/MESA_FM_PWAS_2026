@@ -1,0 +1,669 @@
+---
+title: "Apply MESA-Trained PWAS Models to UKB Phenotypes"
+author: "Claudia Krueger"
+date: "2025-07-31"
+output: html_document
+---
+
+**Download Phenotype Summary Statistics**
+https://docs.google.com/spreadsheets/d/1AeeADtT0U1AukliiNyiVzVRdLYPkTbruQSk38DeutU8/edit#gid=903887429
+
+**Perform liftover**
+```{bash}
+conda install -c bioconda ucsc-liftover
+
+zcat ~/ukb_phecodes/phecode-###.#-both_sexes.tsv.bgz \
+| awk 'BEGIN{FS=OFS="\t"} NR>1{
+    c=$1; if(c!~/^chr/) c="chr"c;
+    key=c":"$2":"$3":"$4;           # chr:pos:ref:alt
+    print c,$2-1,$2,key
+}' > ~/ukb_phecodes/phecode_###.#.keyed.bed
+
+liftOver ~/ukb_phecodes/phecode_###.#.keyed.bed \
+  ~/ukb_phecodes/hg19ToHg38.over.chain.gz \
+  ~/ukb_phecodes/phecode_###.#.lifted.keyed.bed \
+  ~/ukb_phecodes/phecode_###.#.unmapped.keyed.bed
+
+awk 'BEGIN{FS=OFS="\t"} {print $4,$1,$3}' \
+  ~/ukb_phecodes/phecode_###.#.lifted.keyed.bed \
+| sort -k1,1 \
+> ~/ukb_phecodes/key_to_hg38.tsv
+
+zcat ~/ukb_phecodes/phecode-###.#-both_sexes.tsv.bgz \
+| awk 'BEGIN{FS=OFS="\t"} NR==1{hdr=$0; next}
+       {c=$1; if(c!~/^chr/) c="chr"c;
+        key=c":"$2":"$3":"$4;
+        print key,$0}' \
+| sort -k1,1 \
+> ~/ukb_phecodes/key_to_row.tsv
+
+join -t $'\t' -1 1 -2 1 \
+  ~/ukb_phecodes/key_to_row.tsv \
+  ~/ukb_phecodes/key_to_hg38.tsv \
+| awk 'BEGIN{OFS="\t"} {key=$1; $1=""; sub(/^\t/,""); print $0,$(NF-1),$NF}' \
+> ~/ukb_phecodes/phecode_###.#_hg38.tsv
+
+zcat ~/ukb_phecodes/phecode-###.#-both_sexes.tsv.bgz \
+| head -n1 \
+| awk 'BEGIN{OFS="\t"} {print $0,"hg38_chr","hg38_pos"}' \
+> ~/ukb_phecodes/phecode_###.#.hg38.with_header.tsv
+
+cat ~/ukb_phecodes/phecode_###.#_hg38.tsv \
+>> ~/ukb_phecodes/phecode_###.#.hg38.with_header.tsv
+
+bgzip -f ~/ukb_phecodes/phecode_###.#.hg38.with_header.tsv
+```
+
+**Tabix Processing**
+```{bash}
+bash ~/ukb_phecodes/01tabix_processing.sh ~/ukb_phecodes/phecode_###.#.hg38.with_header.tsv.gz ~/mesa_pwas/predixcan_models_varids-effallele_mesa.txt.gz ~/ukb_phecodes/formatted_tables/phecode_###.#_mesa_filtered.tsv
+```
+
+**01tabix_processing.sh**
+```{bash}
+#!/usr/bin/env bash
+set -euo pipefail
+
+IN="$1"
+MESA="$2"
+OUT="$3"
+
+awk -F',' 'NR>1{print $2":"$3}' <(zcat "$MESA") \
+| awk -v OFS="\t" '
+  # First input (from MESA): build keep set
+  NR==FNR { keep[$1]=1; next }
+
+  # Second input (UKB): parse header to get indices; then format+filter
+  FNR==1{
+    for(i=1;i<=NF;i++) h[$i]=i
+    print "SNP","chr","pos","ref","alt",
+          "beta_meta","se_meta","neglog10_pval_meta",
+          "beta_EUR","se_EUR","neglog10_pval_EUR",
+          "beta_AFR","se_AFR","neglog10_pval_AFR"
+    next
+  }
+
+  {
+    chr=$(h["hg38_chr"]); pos=$(h["hg38_pos"]); ref=$(h["ref"]); alt=$(h["alt"])
+    if (chr ~ /^[0-9]+$/) chr="chr" chr
+    if (chr ~ /^[XY]$/) chr="chr" chr
+
+    key = chr ":" pos
+    if (!(key in keep)) next
+
+    snp = chr "_" pos "_" ref "_" alt "_b38"
+
+    print snp, chr, pos, ref, alt,
+          $(h["beta_meta"]), $(h["se_meta"]), $(h["neglog10_pval_meta"]),
+          $(h["beta_EUR"]),  $(h["se_EUR"]),  $(h["neglog10_pval_EUR"]),
+          $(h["beta_AFR"]),  $(h["se_AFR"]),  $(h["neglog10_pval_AFR"])
+  }
+' - <(bgzip -dc "$IN") > "$OUT"
+```
+
+**Split by Population**
+```{bash}
+bash ~/ukb_phecodes/02split_pops.sh ~/ukb_phecodes/formatted_tables/phecode_###.#_mesa_filtered.tsv ~/ukb_phecodes/formatted_tables/phecode_###.#
+```
+
+**02split_pops.sh**
+```{bash}
+#!/usr/bin/env bash
+set -euo pipefail
+
+IN="$1"
+OUT_PREFIX="$2"
+
+# auto-detect decompressor
+DECOMP="cat"
+if [[ "$IN" == *.gz ]]; then
+  DECOMP="zcat"
+fi
+
+$DECOMP "$IN" | awk -v OFS="\t" -v pre="$OUT_PREFIX" '
+BEGIN{
+  meta_out = pre "_META.tsv"
+  eur_out  = pre "_EUR.tsv"
+  afr_out  = pre "_AFR.tsv"
+}
+NR==1{
+  for(i=1;i<=NF;i++) h[$i]=i
+
+  # write headers
+  print "SNP","CHR","POS","REF","ALT","BETA","SE" > meta_out
+  print "SNP","CHR","POS","REF","ALT","BETA","SE" > eur_out
+  print "SNP","CHR","POS","REF","ALT","BETA","SE" > afr_out
+  next
+}
+{
+  snp=$(h["SNP"]); chr=$(h["chr"]); pos=$(h["pos"]); ref=$(h["ref"]); alt=$(h["alt"])
+
+  bmeta=$(h["beta_meta"]); smeta=$(h["se_meta"])
+  beur=$(h["beta_EUR"]);   seur=$(h["se_EUR"])
+  bafr=$(h["beta_AFR"]);   safr=$(h["se_AFR"])
+
+  if (bmeta != "NA" && bmeta != "") print snp,chr,pos,ref,alt,bmeta,smeta >> meta_out
+  if (beur  != "NA" && beur  != "") print snp,chr,pos,ref,alt,beur,seur   >> eur_out
+  if (bafr  != "NA" && bafr  != "") print snp,chr,pos,ref,alt,bafr,safr   >> afr_out
+}
+' 
+```
+
+**Run S-PrediXcan in UKB**
+```{bash}
+#!/bin/bash
+
+usage() {
+    echo "Usage: $0 --phecode <PHECODE> --out_dir <OUT_DIR>"
+    exit 1
+}
+
+#parse command-line arguments
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --phecode)
+            PHECODE=$2
+            shift 2
+            ;;
+        --out_dir)
+            OUT_DIR=$2
+            shift 2
+            ;;
+        *)
+            echo "Unknown flag: $1"
+            usage
+            ;;
+    esac
+done
+
+#check for required arguments
+if [[ -z "$PHECODE" || -z "$OUT_DIR" ]]; then
+    echo "ERROR: Missing required arguments"
+    usage
+fi
+
+#define populations for both GWAS data and DB models
+GWAS_POPS=("META" "EUR" "AFR")
+DB_POPS=("META" "EUR" "AFR" "AMR")
+
+#define model-data combinations
+declare -a JOBS=(
+    "EN cis"
+    "EN cis_fm"
+    "EN cistrans_fm"
+    "MASHR cis"
+    "MASHR cis_fm"
+    "MASHR trans"
+    "MASHR trans_fm"
+    "UDR cis"
+    "UDR cis_fm"
+    "UDR trans"
+    "UDR trans_fm"
+)
+
+#repo path
+REPO=$HOME/mesa_pwas_in_ukb
+
+#set up environment once before running any jobs
+echo "Setting up S-PrediXcan environment..."
+bash "$REPO/00install_predixcan.sh"
+
+#activate conda
+source ~/miniconda3/bin/activate
+
+#create environment with compatible versions (version numbers may need to be changed with future updates)
+if ! conda env list | grep -q imlabtools; then
+    #if it doesn't exist, create it
+    conda create -n imlabtools python=3.8 numpy pandas scipy -y
+fi
+
+#activate imlabtools
+conda activate imlabtools
+echo "Successfully activated imlabtools environment"
+
+#maximum number of parallel jobs
+MAX_PARALLEL=1
+
+echo "Starting PWAS analysis for phecode $PHECODE"
+echo "Running all GWAS population x DB population combinations"
+echo ""
+
+#counter for active jobs
+ACTIVE=0
+
+#loop through all combinations: GWAS pop x DB pop x MODEL x DATA
+for GWAS_POP in "${GWAS_POPS[@]}"; do
+    for DB_POP in "${DB_POPS[@]}"; do
+        for JOB in "${JOBS[@]}"; do
+            #parse MODEL and DATA from JOB
+            MODEL=$(echo $JOB | awk '{print $1}')
+            DATA=$(echo $JOB | awk '{print $2}')
+            
+            #skip META population for MASHR and UDR models (DB side)
+            if [ "$MODEL" = "MASHR" ] || [ "$MODEL" = "UDR" ]; then
+                if [ "$DB_POP" = "META" ]; then
+                    continue
+                fi
+            fi
+            
+            #wait if parallel limit hit
+            while [ $ACTIVE -ge $MAX_PARALLEL ]; do
+                wait -n  #wait for any job to finish
+                ACTIVE=$((ACTIVE - 1))
+            done
+            
+            #launch job
+            echo "Starting: GWAS=$GWAS_POP x DB=$DB_POP | $MODEL $DATA"
+            (
+                output_file="${OUT_DIR}/ukb_gwas_${GWAS_POP}_db_${DB_POP}_predixcan_output_${PHECODE}_${MODEL}_${DATA}.csv"
+                
+                #check if output file already exists
+                if [ -f "$output_file" ]; then
+                    echo "WARNING: Output file $output_file already exists. Replacing..."
+                    rm -f "$output_file"
+                fi
+                
+                #run s-predixcan - continue other runs if it fails
+                if python $REPO/01run_predixcan.py --phecode "$PHECODE" --pop_gwas "$GWAS_POP" --pop_db "$DB_POP" --model "$MODEL" --data "$DATA" --out_dir "$OUT_DIR"; then
+                    echo ""
+                    
+                else
+                    echo "ERROR: S-PrediXcan failed for GWAS=$GWAS_POP x DB=$DB_POP | $MODEL $DATA (exit code $?)"
+                    echo "Check log file for details: ${OUT_DIR}/00gwas_${GWAS_POP}_db_${DB_POP}_${PHECODE}_${MODEL}_${DATA}_pwas.log"
+                fi
+                
+            ) > ${OUT_DIR}/00ukb_gwas_${GWAS_POP}_db_${DB_POP}_${PHECODE}_${MODEL}_${DATA}_pwas.log 2>&1 &
+            
+            ACTIVE=$((ACTIVE + 1))
+        done
+    done
+done
+
+#wait for remaining jobs
+wait
+
+#deactivate conda environment
+conda deactivate
+
+echo "All analyses completed for phecode $PHECODE"
+echo "Total combinations run: GWAS pops (4) x DB pops (4 for EN, 3 for MASHR/UDR) x Models/Data"
+```
+
+**00install_predixcan.sh**
+```{bash}
+#!/bin/bash
+
+#install and initialize miniconda if not present
+if [ ! -d ~/miniconda3 ]; then
+    mkdir -p ~/miniconda3
+    wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O ~/miniconda3/miniconda.sh
+    bash ~/miniconda3/miniconda.sh -b -u -p ~/miniconda3
+    rm ~/miniconda3/miniconda.sh
+    eval "$(~/miniconda3/bin/conda shell.bash hook)"
+    conda init bash
+fi
+
+#use the user-level conda
+export PATH=~/miniconda3/bin:$PATH
+eval "$(conda shell.bash hook)"
+
+#accept terms of service
+conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main
+conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
+
+#set strict channel priority and configure channels
+conda config --set channel_priority strict
+conda config --remove-key channels 2>/dev/null || true
+conda config --add channels conda-forge
+
+#clone MetaXcan repo if needed
+if [ ! -d MetaXcan ]; then
+    git clone https://github.com/hakyimlab/MetaXcan
+fi
+
+#create or recreate imlabtools environment with compatible versions
+if conda env list | grep -q imlabtools; then
+    echo "imlabtools environment exists, activating..."
+    conda activate imlabtools
+    #fix NumPy version if needed
+    conda install "numpy<2.0" scipy=1.10.1 -y
+else
+    echo "Creating imlabtools environment with compatible package versions..."
+    conda create -n imlabtools python=3.8 "numpy<2.0" pandas scipy=1.10.1 h5py -y
+fi
+
+echo "Setup complete. Activate with: conda activate imlabtools"
+```
+
+**00pwas_wrapper.sh**
+```{bash}
+#!/bin/bash
+
+#command
+usage() {
+    echo "Usage: $0 --phecode <PHECODE> --pop_gwas <POP_GWAS> --pop_db <POP_DB> --model <MODEL> --data <DATA> --out_dir <OUT_DIR" 
+    exit 1
+}
+
+#command-line arguments
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --phecode)
+            PHECODE=$2
+            shift 2
+            ;;
+        --pop_gwas)
+            POP_GWAS=$2
+            shift 2
+            ;;
+        --pop_db)
+            POP_DB=$2
+            shift 2
+            ;;
+        --model)
+            MODEL=$2
+            shift 2
+            ;;
+        --data)
+            DATA=$2
+            shift 2
+            ;;
+        --out_dir)
+            OUT_DIR=$2
+            shift 2
+            ;;
+        *)
+            echo "unknown flag: $1"
+            usage
+            ;;
+    esac
+done
+
+#check for required arguments
+if [[ -z "$PHECODE" || -z "$POP_GWAS" || -z "$POP_DB" || -z "$MODEL" || -z "$DATA" || -z "$OUT_DIR" ]]; then
+    echo "ERROR: Missing required arguments"
+    usage
+fi
+
+#script path
+REPO=$HOME/mesa_pwas_in_ukb
+
+#set up S-PrediXcan environment
+bash "$REPO/00install_predixcan.sh"
+
+#activate conda
+source ~/miniconda3/bin/activate
+
+#create environment with compatible versions (version numbers may need to be changed with future updates)
+if ! conda env list | grep -q imlabtools; then
+    #if it doesn't exist, create it
+    conda create -n imlabtools python=3.8 numpy pandas scipy -y
+fi
+
+#activate imlabtools
+if conda activate imlabtools; then
+    echo "Successfully activated imlabtools environment"
+fi
+
+output_file="${OUT_DIR}/ukb_gwas_${POP_GWAS}_db_${POP_DB}_predixcan_output_${PHECODE}_${MODEL}_${DATA}.csv"
+
+if [ -f "$output_file" ]; then
+    echo "WARNING: Output file $output_file already exists. Replacing..."
+    rm -f "$output_file"
+fi
+     
+echo "Running PWAS for GWAS=$POP_GWAS x DB=$POP_DB | $MODEL $DATA"
+
+#run s-predixcan - continue even if it fails
+if python $REPO/01run_predixcan.py --phecode "$PHECODE" --pop_gwas "$POP_GWAS" --pop_db "$POP_DB" --model "$MODEL" --data "$DATA" --out_dir "$OUT_DIR"; then
+    echo ""
+
+else
+    echo "ERROR: S-PrediXcan failed for GWAS=$POP_GWAS x DB=$POP_DB | $MODEL $DATA (exit code $?)"
+fi
+
+#deactivate imlabtools
+conda deactivate
+
+#how to view generated PNG files
+echo "DONE: View S-PrediXcan file in ${OUT_DIR}"
+```
+
+**01run_predixcan.py**
+```{python}
+#!/usr/bin/env python3
+
+import os
+import sys
+import argparse
+import subprocess
+
+def set_args():
+    parser = argparse.ArgumentParser(description="run s-predixcan with cross-population analysis")
+    parser.add_argument("--phecode", help="phecode", required=True)
+    parser.add_argument("--pop_gwas", help="population for GWAS data (META, EUR, AFR)", required=True)
+    parser.add_argument("--pop_db", help="population for database/model (META, EUR, AFR, AMR)", required=True)
+    parser.add_argument("--model", help="EN, MASHR, or UDR", required=True)
+    parser.add_argument("--data", help="cis, cis_fm, trans, trans_fm, cistrans_fm", required=True)
+    parser.add_argument("--out_dir", help="output directory location", required=True)
+    return parser
+    
+def main():
+    parser = set_args()
+    args = parser.parse_args(sys.argv[1:])
+    
+    #define paths
+    output = f"{args.out_dir}/ukb_gwas_{args.pop_gwas}_db_{args.pop_db}_predixcan_output_{args.phecode}_{args.model}_{args.data}.csv"
+    
+    #python and metaxcan paths
+    python_path = sys.executable
+    metaxcan_dir = "~/MetaXcan"
+    
+    #retrieve MESA formatted file (using GWAS population)
+    filename = "phecode_" + args.phecode + "_" + args.pop_gwas + ".tsv"
+
+    #assign database paths (using DB population)
+    model_db_path = f"/home/matt/models_for_pwas/{args.model}/{args.data}/{args.pop_db}_{args.model}.db"
+    covariance_path = f"/home/matt/models_for_pwas/{args.model}/{args.data}/{args.pop_db}_{args.model}_covariances.txt.gz"
+    
+    #verify database files exist
+    if not os.path.exists(model_db_path):
+        print(f"ERROR: Model database not found: {model_db_path}")
+        sys.exit(1)
+    if not os.path.exists(covariance_path):
+        print(f"ERROR: Covariance file not found: {covariance_path}")
+        sys.exit(1)
+    
+    print(f"\nRunning S-PrediXcan:")
+    print(f"  GWAS Population: {args.pop_gwas}")
+    print(f"  DB Population:   {args.pop_db}")
+    print(f"  Model:           {args.model}")
+    print(f"  Data:            {args.data}")
+    print(f"  Phecode:         {args.phecode}\n")
+    
+    #command without optional parameters
+    cmd = f"{python_path} {metaxcan_dir}/software/SPrediXcan.py \
+    --gwas_file ~/ukb_phecodes/formatted_tables/{filename} \
+    --snp_column SNP \
+    --effect_allele_column ALT \
+    --non_effect_allele_column REF \
+    --beta_column BETA \
+    --se_column SE \
+    --model_db_path {model_db_path} \
+    --covariance {covariance_path} \
+    --keep_non_rsid \
+    --model_db_snp_key rsid \
+    --throw \
+    --output_file {output}"
+        
+    #execute the S-PrediXcan command
+    print("Executing S-PrediXcan...")
+    exit_code = os.system(cmd)
+    
+    if exit_code != 0:
+        print(f"ERROR: SPrediXcan.py failed with exit code {exit_code}")
+        sys.exit(exit_code)
+        
+    print(f"\nS-PrediXcan analysis completed successfully")
+    print(f"Output file: {output}")
+
+if __name__ == "__main__":
+    main()
+```
+
+**Format output .csv files**
+```{r}
+library(data.table)
+library(dplyr)
+library(stringr)
+library(argparse)
+
+#set up argparse
+parser <- ArgumentParser()
+parser$add_argument("--phecode", help="all of us phenotype ID")
+args <- parser$parse_args()
+
+#build file read in patterns - updated for new naming convention
+pattern <- paste0("~/ukb_phecodes/output/ukb_gwas_*_db_*_predixcan_output_", args$phecode, "_*.csv")
+files <- Sys.glob(pattern)
+cat("Number of files found:", length(files), "\n\n")
+
+#initialize empty list
+all_results <- list()
+all_results_p05 <- list()
+
+#create a data frame to store thresholds
+threshold_summary <- data.frame(
+  GWAS_POP = character(),
+  DB_POP = character(),
+  METHOD = character(),
+  DATA = character(),
+  MODEL_NAME = character(),
+  N_GENES = integer(),
+  THRESHOLD = numeric(),
+  stringsAsFactors = FALSE
+)
+
+#parse through files
+for(file in files) {
+  
+  #read in file
+  f <- fread(file)
+  
+  #calculate Bonferroni threshold for THIS file
+  n_genes <- nrow(f)
+  bonferroni_threshold <- 0.05 / n_genes
+  
+  #parse filename: gwas_{GWAS_POP}_db_{DB_POP}_predixcan_output_{phecode}_{METHOD}_{DATA}.csv
+  
+  #extract GWAS population
+  gwas_pop <- str_extract(file, "ukb_gwas_([A-Z]+)_db")
+  gwas_pop <- gsub("ukb_gwas_", "", gwas_pop)
+  gwas_pop <- gsub("_db", "", gwas_pop)
+  
+  #extract DB population
+  db_pop <- str_extract(file, "db_([A-Z]+)_predixcan")
+  db_pop <- gsub("db_", "", db_pop)
+  db_pop <- gsub("_predixcan", "", db_pop)
+  
+  #extract the method and data type from filename
+  #remove prefix up to and including the phecode
+  remainder <- sub(paste0(".*_predixcan_output_", args$phecode, "_"), "", file)
+  #remove .csv extension
+  remainder <- gsub("\\.csv$", "", remainder)
+  
+  #remainder contains "{method}_{data}", e.g., "EN_cis" or "MASHR_cistrans_fm"
+  #split to get method and data
+  parts_split <- strsplit(remainder, "_", fixed = TRUE)[[1]]
+  method <- parts_split[1]  # EN, MASHR, UDR
+  data_type <- paste(parts_split[-1], collapse = "_")  # cis, cis_fm, trans, trans_fm, cistrans_fm
+  
+  #build the model name string (for backward compatibility and easy identification)
+  model_name <- paste0(gwas_pop, "x", db_pop, "_", method, "_", data_type)
+  
+  cat("Processing:", model_name, "\n")
+  cat("  GWAS Pop:", gwas_pop, "| DB Pop:", db_pop, "| Method:", method, 
+      "| Data:", data_type, "\n")
+  cat("  Genes:", n_genes, "| Threshold:", format(bonferroni_threshold, scientific = TRUE), "\n\n")
+  
+  #add to threshold summary
+  threshold_summary <- rbind(threshold_summary, 
+                             data.frame(
+                               GWAS_POP = gwas_pop,
+                               DB_POP = db_pop,
+                               METHOD = method,
+                               DATA = data_type,
+                               MODEL_NAME = model_name,
+                               N_GENES = n_genes,
+                               THRESHOLD = bonferroni_threshold
+                             ))
+  
+  #filter by Bonferroni threshold
+  filtered <- f %>%
+    select(gene, gene_name, zscore, effect_size, pvalue, var_g, pred_perf_r2, 
+           pred_perf_pval, pred_perf_qval, n_snps_used, n_snps_in_cov, n_snps_in_model) %>%
+    filter(pvalue < bonferroni_threshold) %>%
+    mutate(
+      gwas_pop = gwas_pop,
+      db_pop = db_pop,
+      method = method,
+      data_type = data_type,
+      model_name = model_name
+    )
+  
+  #filter by p < 0.05
+  filtered_p05 <- f %>%
+    select(gene, gene_name, zscore, effect_size, pvalue, var_g, pred_perf_r2, 
+           pred_perf_pval, pred_perf_qval, n_snps_used, n_snps_in_cov, n_snps_in_model) %>%
+    filter(pvalue < 0.05) %>%
+    mutate(
+      gwas_pop = gwas_pop,
+      db_pop = db_pop,
+      method = method,
+      data_type = data_type,
+      model_name = model_name
+    )
+  
+  #add to results list
+  if(nrow(filtered) > 0) {
+    all_results[[model_name]] <- filtered
+  }
+  if(nrow(filtered_p05) > 0) {
+    all_results_p05[[model_name]] <- filtered_p05
+  }
+}
+
+#combine all results into one table
+merged_results <- rbindlist(all_results, fill = TRUE)
+merged_results_p05 <- rbindlist(all_results_p05, fill = TRUE)
+
+#reorder columns for better readability
+if(nrow(merged_results) > 0) {
+  merged_results <- merged_results %>%
+    select(gene, gene_name, gwas_pop, db_pop, method, data_type, model_name,
+           zscore, effect_size, pvalue, var_g, pred_perf_r2, 
+           pred_perf_pval, pred_perf_qval, n_snps_used, n_snps_in_cov, n_snps_in_model)
+}
+
+if(nrow(merged_results_p05) > 0) {
+  merged_results_p05 <- merged_results_p05 %>%
+    select(gene, gene_name, gwas_pop, db_pop, method, data_type, model_name,
+           zscore, effect_size, pvalue, var_g, pred_perf_r2, 
+           pred_perf_pval, pred_perf_qval, n_snps_used, n_snps_in_cov, n_snps_in_model)
+}
+
+#write merged output
+output_file <- paste0("~/ukb_phecodes/filtered_output/merged_significant_results_bcorr_", args$phecode, ".tsv")
+output_file_p05 <- paste0("~/ukb_phecodes/filtered_output/merged_significant_results_p05_", args$phecode, ".tsv")
+threshold_file <- paste0("~/ukb_phecodes/filtered_output/bonferroni_thresholds_", args$phecode, ".txt")
+
+write.table(merged_results, output_file, row.names=FALSE, quote=FALSE, sep="\t")
+write.table(merged_results_p05, output_file_p05, row.names=FALSE, quote=FALSE, sep="\t")
+write.table(threshold_summary, threshold_file, row.names=FALSE, quote=FALSE, sep="\t")
+
+#print summary statistics
+cat("\n========== SUMMARY ==========\n")
+cat("Total files processed:", length(files), "\n")
+cat("Bonferroni significant genes:", nrow(merged_results), "\n")
+cat("P < 0.05 genes:", nrow(merged_results_p05), "\n")
+```

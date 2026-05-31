@@ -1,0 +1,160 @@
+---
+title: "TensorQTL Cis and Trans pQTL Mapping"
+author: "Claudia Krueger"
+date: "2025-06-30"
+output: html_document
+---
+
+**Nominal and Empirical Cis-pQTL Mapping**
+```{python}
+import pandas as pd
+import torch
+import tensorqtl
+import os
+import numpy as np
+import qtl
+import scipy
+import scipy.stats as stats
+from tensorqtl import pgen, cis, trans, post
+import math
+import rpy2
+import rpy2.robjects as robjects
+from rpy2.robjects.packages import importr
+
+#enable GPU usage
+os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:512"
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"torch: {torch.__version__} (CUDA {torch.version.cuda}), device: {device}")
+print(f"pandas: {pd.__version__}")
+
+#define paths to data
+plink_prefix_path = "~/ancestry_specific_folder/ancestry_final"
+expression_bed = "~/ancestry_specific_folder/tensor_lm_table.bed.gz"
+prefix = "~/ancestry_specific_folder/tensorqtl/nominal/qtl"
+output_dir = "~/ancestry_specific_folder/tensorqtl/nominal"
+os.makedirs(output_dir, exist_ok=True)
+
+#load phenotype data
+phenotype_df, phenotype_pos_df = tensorqtl.read_phenotype_bed(expression_bed)
+
+#PLINK reader for genotypes
+pgr = pgen.PgenReader(plink_prefix_path)
+genotype_df = pgr.load_genotypes()
+variant_df = pgr.variant_df
+
+#map
+for chr_num in range(1, 24):
+    chr_str = f"chr{chr_num}"
+    print(chr_str)
+
+    try:
+        cis.map_nominal(genotype_df, variant_df, phenotype_df.loc[phenotype_pos_df["chr"]==chr_str],
+        phenotype_pos_df.loc[phenotype_pos_df["chr"]==chr_str],
+        prefix, covariates_df=None, maf_threshold=0)
+
+        pairs_df = pd.read_parquet(f"{prefix}.cis_qtl_pairs.{chr_str}.parquet")
+        print(pairs_df.head())
+
+        pairs_df.to_csv(f"~/ancestry_specific_folder/tensorqtl/nominal/nominal{chr_str}cis_qtls", sep="\t", index=False)
+
+    except Exception as e:
+      print(f"{e}")
+
+    try:
+        cis_df = cis.map_cis(genotype_df, variant_df,
+        phenotype_df.loc[phenotype_pos_df["chr"]==chr_str],
+        phenotype_pos_df.loc[phenotype_pos_df["chr"]==chr_str]
+        , seed=123, nperm=10000)
+
+        post.calculate_qvalues(cis_df, fdr=0.05, qvalue_lambda=0.85)
+
+        cis_df.head()
+        cis_df.to_csv(f"~/ancestry_specific_folder/tensorqtl/empirical/empirical{chr_str}cis_qtls", sep="\t", index=True)
+
+    except Exception as e:
+        print(f"{e}")
+```
+
+**Trans-pQTL Mapping**
+```{python}
+import pandas as pd
+import torch
+import tensorqtl
+import os
+import numpy
+import qtl
+import scipy
+from tensorqtl import pgen, cis, trans, post
+import re
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"torch: {torch.__version__} (CUDA {torch.version.cuda}), device: {device}")
+print(f"pandas: {pd.__version__}")
+
+#define paths to data
+plink_prefix_path = "~/ancestry_specific_folder/ancestry_final"
+expression_bed = "~/ancestry_specific_folder/tensor_lm_table.bed.gz"
+prefix = "~/ancestry_specific_folder/tensorqtl/trans/qtl"
+
+#load phenotypes
+phenotype_df, phenotype_pos_df = tensorqtl.read_phenotype_bed(expression_bed)
+
+pgr = pgen.PgenReader(plink_prefix_path)
+genotype_df = pgr.load_genotypes()
+variant_df = pgr.variant_df
+
+try:
+    #trans mapping
+    trans_map = trans.map_trans(
+        genotype_df,
+        phenotype_df,
+        batch_size=10000,
+        return_sparse=True,
+        pval_threshold=5e-5,  #threshold necessary due to memory limitations
+        maf_threshold=0.01,
+        return_r2=True
+    )
+    
+    #filter cis-associations
+    trans_filtered = trans.filter_cis(
+        trans_map, 
+        phenotype_pos_df, 
+        variant_df, 
+        window=1000000
+    )
+    
+    #dummy covariate (just a constant)
+    covariates_df = pd.DataFrame(1, index=genotype_df.columns, columns=['intercept'])
+
+    #map permutations
+    trans_map_perm = trans.map_permutations(
+      genotype_df,
+      covariates_df=covariates_df,
+      maf_threshold=0.01, 
+      batch_size=10000, 
+      seed=123)
+    
+    trans.apply_permutations(trans_map_perm, trans_filtered)
+    
+    post.calculate_qvalues(trans_filtered, fdr=0.05, qvalue_lambda=0.85)
+    
+    trans_filtered.to_csv(f"/home/claudia/qtl_mapping/all_race/tensorqtl/trans/trans_perm.tsv", sep="\t", index=False)
+
+except Exception as e:
+    print(f'{e}')
+```
+
+**Filter and Format mapped pQTLS by FDR and Bonferroni-adjusted Pvalue:**
+```{bash}
+#combine empirical cis files
+head -n 1 ~/ancestry_specific_folder/tensorqtl/empirical/empiricalchr1cis_qtls > ~/ancestry_specific_folder/tensorqtl/empirical/cis_qtls.tsv
+
+for file in ~/ancestry_specific_folder/tensorqtl/empirical/empiricalchr*; do tail -n +2 "$file" >> ~/ancestry_specific_folder/tensorqtl/empirical/cis_qtls.tsv; done
+
+#filter cis file
+awk 'NR==1 || ($18 < 0.05) {print}' ~/ancestry_specific_folder/tensorqtl/empirical/cis_qtls.tsv > ~/ancestry_specific_folder/tensorqtl/empirical/0.05cis_qtls.tsv
+
+#filter trans file
+awk 'NR==1 || ($14 < 0.05) {print}' ~/ancestry_specific_folder/tensorqtl/trans/trans_perm.tsv > ~/ancestry_specific_folder/tensorqtl/trans/trans_fdr0.05.tsv 
+```

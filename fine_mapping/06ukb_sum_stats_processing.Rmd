@@ -1,0 +1,534 @@
+---
+title: "Download and Formatting of UK Biobank Olink pQTL Summary Statistics"
+author: "Claudia Krueger"
+date: "2025-07-01"
+output: html_document
+---
+
+**Synapse Download from UKBB**
+```{python}
+import synapseclient 
+import synapseutils 
+import os
+
+#set up credentials
+token = $SYNAPSE_AUTH_TOKEN
+syn = synapseclient.login(authToken=token)
+syn.getUserProfile()
+
+#download all files
+files = synapseutils.syncFromSynapse(syn, 'syn52355726', path="~/ukbio/all_race") 
+files = synapseutils.syncFromSynapse(syn, 'syn51365303', path="~/ukbio/euro_amer") 
+files = synapseutils.syncFromSynapse(syn, 'syn51365304', path="~/ukbio/afr_amer") 
+files = synapseutils.syncFromSynapse(syn, 'syn51365306', path="~/ukbio/chn_amer") 
+files = synapseutils.syncFromSynapse(syn, 'syn51500434', path="~/ukbio/hisp_amer") 
+
+#gzip tar files
+os.system("gzip ~/ukbio/all_race/*")
+os.system("gzip ~/ukbio/euro_amer/*")
+os.system("gzip ~/ukbio/afr_amer/*")
+os.system("gzip ~/ukbio/chn_amer/*")
+os.system("gzip ~/ukbio/hisp_amer/*")
+```
+
+**Combine tar files**
+```{bash}
+#!/bin/bash
+
+#set paths
+SOURCE_DIR="~/ukbio/ancestry_specific_folder"
+OUTPUT_DIR="~/ukbio/ancestry_summary"
+LOG_FILE="~/ukbio/ancestry_processing.log"
+
+#set maximum number of parallel jobs
+MAX_JOBS=40
+
+#create output directory
+mkdir -p "$OUTPUT_DIR"
+
+#initialize log file
+echo "Processing started at $(date)" > "$LOG_FILE"
+
+#function to log messages (thread-safe)
+log_message() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" | tee -a "$LOG_FILE"
+}
+
+#function to check if all 23 chromosomes are present in a file
+check_chromosomes() {
+    local file="$1"
+    local temp_check=$(mktemp)
+    
+    #extract chromosome information from first column (now with "chr" prefix)
+    zcat "$file" | awk '{print $1}' | sort -u > "$temp_check"
+    
+    local expected_chrs=("chr1" "chr2" "chr3" "chr4" "chr5" "chr6" "chr7" "chr8" "chr9" "chr10" "chr11" "chr12" "chr13" "chr14" "chr15" "chr16" "chr17" "chr18" "chr19" "chr20" "chr21" "chr22" "chr23")
+    
+    #check if we have expected chromosomes
+    local missing_chrs=0
+    local found_chrs=()
+    
+    for chr in "${expected_chrs[@]}"; do
+        if grep -q "^${chr}$" "$temp_check"; then
+            found_chrs+=("$chr")
+        else
+            log_message "WARNING: Chromosome $chr not found in $file"
+            ((missing_chrs++))
+        fi
+    done
+    
+    rm "$temp_check"
+    
+    #consider it successful if we have 23 chromosomes
+    local found_count=${#found_chrs[@]}
+    if [ $found_count -ge 23 ]; then
+        log_message "Found $found_count chromosomes in $file (acceptable)"
+        return 0
+    else
+        log_message "Only found $found_count chromosomes in $file (minimum 23 required)"
+        return 1
+    fi
+}
+
+#function to process chromosome data with ID column modifications
+process_chromosome_data() {
+    local input_file="$1"
+    local output_file="$2"
+    
+    if file "$input_file" | grep -q "gzip"; then
+        zcat "$input_file" | awk '
+        BEGIN { OFS="\t" }
+        NR==1 {
+            #find LOG10P column and modify ID to SNP
+            for(i=1; i<=NF; i++) {
+                if($i == "LOG10P") log10p_col = i
+                if($i == "ID") $i = "SNP"
+            }
+            #print header with new columns
+            for(j=1; j<=NF; j++) {
+                printf "%s", $j
+                if(j == 3) printf "%sID", OFS
+                if(j == log10p_col) printf "%sPvalue", OFS
+                if(j < NF) printf "%s", OFS
+            }
+            printf "\n"
+        }
+        NR>1 {
+            #store original chromosome for ID processing
+            orig_chrom = $1
+            # Modify chromosome column to add chr prefix
+            $1 = "chr" $1
+            
+            #process ID column based on original chromosome
+            new_id = $3
+            gsub(/:imp:v1$/, "", new_id)
+            
+            #check for X chromosome and handle ID accordingly
+            if(orig_chrom == "23") {
+                #for X chromosome (represented as 23), keep ID as is (no chr prefix)
+            } else {
+                #for autosomes, add chr prefix to ID
+                new_id = "chr" new_id
+            }
+            
+            for(j=1; j<=NF; j++) {
+                printf "%s", $j
+                if(j == 3) printf "%s%s", OFS, new_id
+                if(j == log10p_col) {
+                    if($j != "NA" && $j != "") {
+                        printf "%s%g", OFS, 10^(-$j)
+                    } else {
+                        printf "%sNA", OFS
+                    }
+                }
+                if(j < NF) printf "%s", OFS
+            }
+            printf "\n"
+        }' >> "$output_file"
+    else
+        awk '
+        BEGIN { OFS="\t" }
+        NR==1 {
+            for(i=1; i<=NF; i++) {
+                if($i == "LOG10P") log10p_col = i
+                if($i == "ID") $i = "SNP"
+            }
+            for(j=1; j<=NF; j++) {
+                printf "%s", $j
+                if(j == 3) printf "%sID", OFS
+                if(j == log10p_col) printf "%sPvalue", OFS
+                if(j < NF) printf "%s", OFS
+            }
+            printf "\n"
+        }
+        NR>1 {
+            #store original chromosome for ID processing
+            orig_chrom = $1
+            # Modify chromosome column to add chr prefix
+            $1 = "chr" $1
+            
+            #process ID column based on original chromosome
+            new_id = $3
+            gsub(/:imp:v1$/, "", new_id)
+            
+            #check for X chromosome and handle ID accordingly
+            if(orig_chrom == "23") {
+                # For X chromosome (represented as 23), keep ID as is (no chr prefix)
+                # new_id already has :imp:v1 removed, keep it unchanged
+            } else {
+                # For autosomes, add chr prefix to ID
+                new_id = "chr" new_id
+            }
+            
+            for(j=1; j<=NF; j++) {
+                printf "%s", $j
+                if(j == 3) printf "%s%s", OFS, new_id
+                if(j == log10p_col) {
+                    if($j != "NA" && $j != "") {
+                        printf "%s%g", OFS, 10^(-$j)
+                    } else {
+                        printf "%sNAu", OFS
+                    }
+                }
+                if(j < NF) printf "%s", OFS
+            }
+            printf "\n"
+        }' "$input_file" >> "$output_file"
+    fi
+}
+
+#function to process a single tar file
+process_tar_file() {
+    local tar_file="$1"
+    local base_name=$(basename "$tar_file" .tar.gz)
+    local temp_dir=$(mktemp -d)
+    local output_file="${OUTPUT_DIR}/${base_name}_combined.gz"
+    local job_id="$BASHPID"  # Use background process ID for job identification
+    
+    log_message "[Job $job_id] Processing: $tar_file"
+    
+    #extract tar file to temporary directory
+    if ! tar -xzf "$tar_file" -C "$temp_dir"; then
+        log_message "[Job $job_id] ERROR: Failed to extract $tar_file"
+        rm -rf "$temp_dir"
+        return 1
+    fi
+    
+    #find the extracted directory (should contain chromosome files)
+    local extracted_dir=$(find "$temp_dir" -type d -name "*" | head -2 | tail -1)
+    if [ -z "$extracted_dir" ]; then
+        extracted_dir="$temp_dir"
+    fi
+    
+    #count chromosome files
+    local chr_files=($(find "$extracted_dir" -name "*chr*" -type f | sort -V))
+    if [ ${#chr_files[@]} -eq 0 ]; then
+        #Try alternative naming pattern
+        chr_files=($(find "$extracted_dir" -name "combined_chr*" -type f | sort -V))
+    fi
+    
+    if [ ${#chr_files[@]} -eq 0 ]; then
+        log_message "[Job $job_id] ERROR: No chromosome files found in $tar_file"
+        rm -rf "$temp_dir"
+        return 1
+    fi
+    
+    #find LOG10P column position from first file
+    local log10p_col=0
+    if file "${chr_files[0]}" | grep -q "gzip"; then
+        log10p_col=$(zcat "${chr_files[0]}" | head -1 | awk '{for(i=1;i<=NF;i++) if($i=="LOG10P") print i}')
+    else
+        log10p_col=$(head -1 "${chr_files[0]}" | awk '{for(i=1;i<=NF;i++) if($i=="LOG10P") print i}')
+    fi
+    
+    #combine all chromosome files with header processing
+    local temp_combined=$(mktemp)
+    local header_written=false
+    
+    for chr_file in "${chr_files[@]}"; do
+        if [ "$header_written" = false ]; then
+            #For the first file, include the header
+            process_chromosome_data "$chr_file" "$temp_combined"
+            header_written=true
+        else
+            #for subsequent files, skip the header (process from line 2 onwards)
+            if file "$chr_file" | grep -q "gzip"; then
+                zcat "$chr_file" | tail -n +2 | awk -v log10p_col="$log10p_col" '
+                BEGIN { OFS="\t" }
+                {
+                    #store original chromosome for ID processing
+                    orig_chrom = $1
+                    #modify chromosome column to add chr prefix
+                    $1 = "chr" $1
+                    
+                    #process ID column based on original chromosome
+                    new_id = $3
+                    gsub(/:imp:v1$/, "", new_id)
+                    
+                    #check for X chromosome and handle ID accordingly
+                    if(orig_chrom == "23") {
+                        # For X chromosome (represented as 23), keep ID as is (no chr prefix)
+                        # new_id already has :imp:v1 removed, keep it unchanged
+                    } else {
+                        # For autosomes, add chr prefix to ID
+                        new_id = "chr" new_id
+                    }
+                    
+                    for(j=1; j<=NF; j++) {
+                        printf "%s", $j
+                        if(j == 3) printf "%s%s", OFS, new_id
+                        if(j == log10p_col) {
+                            if($j != "NA" && $j != "") {
+                                printf "%s%g", OFS, 10^(-$j)
+                            } else {
+                                printf "%sNA", OFS
+                            }
+                        }
+                        if(j < NF) printf "%s", OFS
+                    }
+                    printf "\n"
+                }' >> "$temp_combined"
+            else
+                tail -n +2 "$chr_file" | awk -v log10p_col="$log10p_col" '
+                BEGIN { OFS="\t" }
+                {
+                    #store original chromosome for ID processing
+                    orig_chrom = $1
+                    # Modify chromosome column to add chr prefix
+                    $1 = "chr" $1
+                    
+                    #process ID column based on original chromosome
+                    new_id = $3
+                    gsub(/:imp:v1$/, "", new_id)
+                    
+                    #check for X chromosome and handle ID accordingly
+                    if(orig_chrom == "23") {
+                        # For X chromosome (represented as 23), keep ID as is (no chr prefix)
+                        # new_id already has :imp:v1 removed, keep it unchanged
+                    } else {
+                        # For autosomes, add chr prefix to ID
+                        new_id = "chr" new_id
+                    }
+                    
+                    for(j=1; j<=NF; j++) {
+                        printf "%s", $j
+                        if(j == 3) printf "%s%s", OFS, new_id
+                        if(j == log10p_col) {
+                            if($j != "NA" && $j != "") {
+                                printf "%s%g", OFS, 10^(-$j)
+                            } else {
+                                printf "%sNA", OFS
+                            }
+                        }
+                        if(j < NF) printf "%s", OFS
+                    }
+                    printf "\n"
+                }' >> "$temp_combined"
+            fi
+        fi
+    done
+    
+    #compress the combined file
+    gzip -c "$temp_combined" > "$output_file"
+    rm "$temp_combined"
+    
+    #verify the combined file has all chromosomes
+    if check_chromosomes "$output_file"; then
+        log_message "[Job $job_id] Successfully created and verified: $output_file"
+        
+        # Clean up: remove original tar file and temporary directory
+        rm -f "$tar_file"
+        rm -rf "$temp_dir"
+        log_message "[Job $job_id] Cleaned up original files for $base_name"
+        
+        return 0
+    else
+        log_message "[Job $job_id] Verification failed for $output_file - keeping original files"
+        rm -f "$output_file"
+        rm -rf "$temp_dir"
+        return 1
+    fi
+}
+
+#function to wait for available job slot - FIXED VERSION
+wait_for_slot() {
+    while true; do
+        # Count actual running processes instead of relying on 'jobs'
+        current_jobs=$(pgrep -u claudia -f "combine_tar_files_parallel.sh" | wc -l)
+        # Subtract 1 for the main script process
+        if [ $current_jobs -gt 0 ]; then
+            current_jobs=$((current_jobs - 1))
+        fi
+        
+        if [ $current_jobs -lt $MAX_JOBS ]; then
+            break
+        fi
+        sleep 1
+    done
+    
+    # Always show current job count (including when 0 or when hitting max)
+    log_message "Current running jobs: $current_jobs/$MAX_JOBS"
+}
+
+#main processing loop
+log_message "Starting batch processing of tar files in $SOURCE_DIR with $MAX_JOBS parallel jobs"
+
+#count total files for progress tracking
+total_files=$(find "$SOURCE_DIR" -name "*.tar.gz" | wc -l)
+log_message "Found $total_files tar.gz files to process"
+
+if [ $total_files -eq 0 ]; then
+    log_message "No .tar.gz files found in $SOURCE_DIR"
+    exit 1
+fi
+
+#process each tar file in parallel
+processed=0
+
+#store all tar files in an array first (more reliable than process substitution)
+mapfile -t tar_files < <(find "$SOURCE_DIR" -name "*.tar.gz")
+
+for tar_file in "${tar_files[@]}"; do
+    #wait for available slot
+    wait_for_slot
+    
+    ((processed++))
+    log_message "Progress: $processed/$total_files - Starting $(basename "$tar_file") in background"
+    
+    #start processing in background
+    (
+        if process_tar_file "$tar_file"; then
+            echo "SUCCESS:$(basename "$tar_file")" >> "${OUTPUT_DIR}/job_results.tmp"
+        else
+            echo "FAILED:$(basename "$tar_file")" >> "${OUTPUT_DIR}/job_results.tmp"
+        fi
+    ) &
+    
+    #show job count after starting each job
+    sleep 0.1  # Brief pause to let job start
+    current_jobs_after=$(pgrep -u claudia -f "combine_tar_files_parallel.sh" | wc -l)
+    if [ $current_jobs_after -gt 0 ]; then
+        current_jobs_after=$((current_jobs_after - 1))
+    fi
+    log_message "Jobs running after starting $(basename "$tar_file"): $current_jobs_after/$MAX_JOBS"
+    
+    #Progress update every 16 files
+    if [ $((processed % 16)) -eq 0 ]; then
+        log_message "Progress update: $processed/$total_files files started"
+    fi
+done
+
+#wait for all background jobs to complete
+log_message "Waiting for all background jobs to complete..."
+wait
+
+#count results
+if [ -f "${OUTPUT_DIR}/job_results.tmp" ]; then
+    success_count=$(grep "^SUCCESS:" "${OUTPUT_DIR}/job_results.tmp" | wc -l)
+    failed_count=$(grep "^FAILED:" "${OUTPUT_DIR}/job_results.tmp" | wc -l)
+    
+    log_message "Final Summary:"
+    log_message "Successfully processed: $success_count files"
+    log_message "Failed to process: $failed_count files"
+    
+    if [ $failed_count -gt 0 ]; then
+        log_message "Failed files:"
+        grep "^FAILED:" "${OUTPUT_DIR}/job_results.tmp" | sed 's/^FAILED://' | while read -r failed_file; do
+            log_message "  - $failed_file"
+        done
+    fi
+    
+    #clean up temp file
+    rm -f "${OUTPUT_DIR}/job_results.tmp"
+else
+    log_message "No results file found - this may indicate an issue with the processing"
+fi
+
+log_message "Processing completed at $(date)"
+```
+
+**Keep Only Needed Columns in Summary Statistics Files**
+```{bash}
+#!/bin/bash
+
+INPUT_FOLDER="$1" #"~/ukbio/ancestry_summary"
+OUTPUT_FOLDER="$2" #"~/ukbio/ancestry_specific_folder"
+MAX_JOBS=20
+
+mkdir -p "$OUTPUT_FOLDER"
+
+#function to process a single file
+process_file() {
+    local file="$1"
+    local INPUT_FOLDER="$2"
+    local OUTPUT_FOLDER="$3"
+    
+    [ ! -f "$file" ] && return
+    
+    filename=$(basename "$file")
+    
+    #determine if file is compressed and set reader/output
+    if [[ "$file" == *.gz ]]; then
+        reader="zcat"
+        output_name="$filename"  # Keep .gz extension
+    else
+        reader="cat"
+        output_name="${filename}.gz"  # Add .gz extension for uncompressed input
+    fi
+    
+    #check for valid chromosomes and process file, piping through gzip
+    $reader "$file" | awk '
+        BEGIN { OFS="\t" }
+        NR==1 { 
+            for(i=1; i<=NF; i++) {
+                if($i == "CHROM") chrom_col = i
+                if($i != "SNP" && $i != "TEST" && $i != "INFO" && $i != "CHISQ" && $i != "LOG10P" && $i != "EXTRA") {
+                    if(!keep_cols) keep_cols = i; else keep_cols = keep_cols "," i
+                }
+            }
+            if(!chrom_col) { print "FAIL: no CHROM column" > "/dev/stderr"; exit 1 }
+            
+            split(keep_cols, cols, ",")
+            for(j=1; j<=length(cols); j++) {
+                printf "%s%s", $cols[j], (j<length(cols) ? "\t" : "\n")
+            }
+        }
+        NR>1 && chrom_col && $chrom_col ~ /^chr([1-9]|1[0-9]|2[0-3])$/ {
+            has_valid = 1
+            split(keep_cols, cols, ",")
+            for(j=1; j<=length(cols); j++) {
+                printf "%s%s", $cols[j], (j<length(cols) ? "\t" : "\n")
+            }
+        }
+        END { if(!has_valid) { print "FAIL: no valid chromosomes" > "/dev/stderr"; exit 1 } }
+    ' | gzip > "$OUTPUT_FOLDER/$output_name" 2>"$OUTPUT_FOLDER/.error_$$"
+    
+    if [ $? -ne 0 ] || [ ! -s "$OUTPUT_FOLDER/$output_name" ]; then
+        echo "$filename: $(cat "$OUTPUT_FOLDER/.error_$$" 2>/dev/null || echo "FAIL")"
+        rm -f "$OUTPUT_FOLDER/$output_name"
+    else
+        echo "$filename: SUCCESS - removing original file"
+        rm -f "$file"
+    fi
+    rm -f "$OUTPUT_FOLDER/.error_$$"
+}
+
+#process files in parallel
+for file in "$INPUT_FOLDER"/*; do
+    [ ! -f "$file" ] && continue
+    
+    #wait if we have too many background jobs
+    while [ $(jobs -r | wc -l) -ge $MAX_JOBS ]; do
+        sleep 0.1
+    done
+    
+    #start processing file in background
+    process_file "$file" "$INPUT_FOLDER" "$OUTPUT_FOLDER" &
+done
+
+#wait for all remaining jobs to complete
+wait
+
+echo "All files processed"
+```
+

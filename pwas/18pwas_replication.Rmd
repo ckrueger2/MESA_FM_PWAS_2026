@@ -1,0 +1,232 @@
+---
+title: "Find Aou PWAS Output and UKB Output Replicates"
+author: "Claudia Krueger"
+date: "2025-07-31"
+output: html_document
+---
+
+**Determine Bonferroni-Corrected P-value**
+```{r}
+#get all bonferroni threshold files
+bonferroni_files <- list.files("~/AllofUs/ukb_rep/", pattern = "^bonferroni_thresholds_.*\\.txt$", full.names = TRUE)
+
+#extract phenotype codes from filenames
+phenotypes <- gsub(".*bonferroni_thresholds_(.*)\\.txt$", "\\1", bonferroni_files)
+
+#calculate Bonferroni p-values for each phenotype
+pvalue_results <- data.frame()
+
+for (i in seq_along(bonferroni_files)) {
+  pheno <- phenotypes[i]
+  
+  #read bonferroni threshold file
+  bonf_data <- fread(bonferroni_files[i])
+  
+  #calculate total number of genes
+  total_genes <- sum(bonf_data$N_GENES)
+  
+  #calculate Bonferroni p-value
+  bonf_pval <- 0.05 / total_genes
+  
+  #store results
+  pvalue_results <- rbind(pvalue_results, 
+                          data.frame(phenotype = pheno, 
+                                    total_genes = total_genes,
+                                    bonferroni_pval = bonf_pval))
+  
+  cat(sprintf("Phenotype %s: %d total genes, Bonferroni p-value = %.2e\n", pheno, total_genes, bonf_pval))
+}
+```
+
+**Filter AoU Output to Bonferroni-Corrected Significance Threshold**
+```{r}
+library(data.table)
+
+#set parameters
+input_dir <- "~/AllofUs/significance"
+pvalue_threshold <- 1.655119e-07
+
+#get all merged files
+merged_files <- list.files(input_dir, pattern = "^merged_significant_results_bcorr_.*\\.(tsv|txt)$", full.names = TRUE)
+
+cat("Found", length(merged_files), "merged files to process\n\n")
+
+#process each file
+for (file_path in merged_files) {
+  cat("Processing:", basename(file_path), "\n")
+  
+  #read the file
+  data <- fread(file_path, header = TRUE)
+  
+  #check if pvalue column exists
+  if (!"pvalue" %in% colnames(data)) {
+    cat("  WARNING: No 'pvalue' column found in", basename(file_path), "- skipping\n\n")
+    next
+  }
+  
+  #filter by p-value
+  filtered_data <- data[pvalue <= pvalue_threshold]
+  
+  cat("  Original rows:", nrow(data), "\n")
+  cat("  Filtered rows:", nrow(filtered_data), "\n")
+  
+  #create output filename
+  file_ext <- tools::file_ext(file_path)
+  file_base <- tools::file_path_sans_ext(basename(file_path))
+  output_file <- file.path(input_dir, paste0(file_base, "_filtered.tsv"))
+  
+  #write filtered data
+  fwrite(filtered_data, output_file, sep = "\t", quote = FALSE)
+  cat("  Output written to:", basename(output_file), "\n\n")
+}
+```
+
+**Find Replicates in UKB**
+```{r}
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(data.table)
+
+#create phenotype name mapping
+phenotype_map <- data.frame(
+  phenotype_code = c("BI_164", "CV_401", "EM_202", "EM_236", 
+                     "EM_239", "MB_286", "MS_708", "RE_475", "NS_333", "GU_582"),
+  ukbb_code = c("280", "401.1", "250.2", "278.1", 
+                "272.1", "296.22", "740.1", "495", "327.3", "401.22"),
+  phenotype_name = c("Anemia", "Essential Hypertension", 
+                     "Type 2 Diabetes", "Overweight and Obesity", "Hyperlipidemia",
+                     "Major Depressive Disorder", "Osteoarthritis", "Asthma", 
+                     "Sleep Apnea", "Chronic Kidney Disease"),
+  stringsAsFactors = FALSE
+)
+
+#directory containing All of Us significance result files
+sig_dir <- "~/AllofUs/significance"
+
+#read All of Us significance files
+aou_files <- list.files(sig_dir, pattern = "merged_significant_results_bcorr_.*\\_filtered.tsv$", 
+                   full.names = TRUE, ignore.case = TRUE)
+
+aou_results <- lapply(aou_files, function(f) {
+  df <- read.delim(f, stringsAsFactors = FALSE)
+  phenotype <- sub(".*_bcorr_([^.]+)_filtered\\.tsv$", "\\1", basename(f))
+  df$phenotype_code <- phenotype
+  return(df)
+})
+
+aou_combined <- do.call(rbind, aou_results)
+
+#add phenotype names to All of Us data
+aou_combined <- aou_combined %>%
+  left_join(phenotype_map, by = "phenotype_code") %>% 
+  filter(phenotype_code != "BI_181", !is.na(gene_name), !is.na(method))
+
+colnames(aou_combined)
+
+#classify data types
+aou_combined <- aou_combined %>%
+  mutate(
+    data_type = case_when(
+      data_type == "cis" ~ "Cis",
+      data_type == "cis_fm" ~ "Cis-FM",
+      data_type == "trans" ~ "Cis+Trans",
+      data_type == "cistrans_fm" ~ "Cis+Trans-FM",
+      data_type == "trans_fm" ~ "Cis+Trans-FM",
+      TRUE ~ data_type
+    )
+  )
+
+fwrite(aou_combined, "~/paper-figures/figure-4/aou_proteins_all.tsv", sep = "\t", col.names = TRUE)
+
+aoucleaned <- aou_combined %>% group_by(gene_name, phenotype_name) %>% 
+  slice(1) %>% 
+  ungroup() %>% select(gene, gene_name, phenotype_name, data_type) %>% arrange(phenotype_name, gene_name)
+
+head(aoucleaned)
+length(aoucleaned$gene_name)
+
+fwrite(aoucleaned, "~/aou_proteins_unique_gene_phenotype.tsv", sep = "\t", col.names = TRUE)
+
+
+#read UKB significant results files
+ukbb_files <- list.files("~/AllofUs/ukbb_rep/", 
+                        pattern = "^merged_significant_results_bcorr_.*\\.tsv$", 
+                        full.names = TRUE)
+
+ukbb_results <- lapply(ukbb_files, function(f) {
+  df <- read.delim(f, stringsAsFactors = FALSE)
+  ukbb_pheno <- sub(".*merged_significant_results_bcorr_(.*)\\.tsv$", "\\1", basename(f))
+  df$ukbb_code <- ukbb_pheno
+  return(df)
+})
+
+ukbb_combined <- do.call(rbind, ukbb_results)
+
+#filter UKBB data for META gwas population where method matches training population concept
+ukbb_meta_filtered <- ukbb_combined %>%
+  left_join(phenotype_map, by = "ukbb_code") %>%
+  filter(!is.na(gene_name) & !is.na(method) & gwas_pop == "META") 
+
+colnames(ukbb_meta_filtered)
+
+#classify data types
+aou_combined <- aou_combined %>%
+  mutate(
+    data_type = case_when(
+      data_type == "cis" ~ "Cis",
+      data_type == "cis_fm" ~ "Cis-FM",
+      data_type == "trans" ~ "Cis+Trans",
+      data_type == "cistrans_fm" ~ "Cis+Trans-FM",
+      data_type == "trans_fm" ~ "Cis+Trans-FM",
+      TRUE ~ data_type
+    )
+  )
+
+ukbb_meta_filtered <- ukbb_meta_filtered %>%
+  mutate(
+    data_type = case_when(
+      data_type == "cis" ~ "Cis",
+      data_type == "cis_fm" ~ "Cis-FM",
+      data_type == "trans" ~ "Cis+Trans",
+      data_type == "cistrans_fm" ~ "Cis+Trans-FM",
+      data_type == "trans_fm" ~ "Cis+Trans-FM",
+      TRUE ~ data_type
+    )
+  )
+
+
+#combine aou and ukbb meta filtered so that methods match, phenotypes match, and db_pop matches gwas_pop, snp type match and effect direction match (effect size sign match)
+combined_meta_snp <- aou_combined %>%
+  inner_join(ukbb_meta_filtered, by = c("phenotype_name", "method", "db_pop", "gene", "gene_name", "data_type"), suffix = c("_aou", "_ukbb")) %>% 
+  filter(sign(effect_size_aou) == sign(effect_size_ukbb)) %>%
+  select(gene, gene_name, method, phenotype_name, db_pop, data_type, gwas_pop_aou, gwas_pop_ukbb, zscore_aou, effect_size_aou, pvalue_aou, zscore_ukbb, effect_size_ukbb, pvalue_ukbb, ukbb_code = ukbb_code_ukbb, aou_code = phenotype_code_ukbb)
+  
+colnames(combined_meta_snp)
+head(combined_meta_snp)
+length(combined_meta_snp$gene_name)
+
+#filter for unique gene-phenotype pairs so that we don't have multiple rows for the same gene-phenotype pair if they replicate across multiple methods or SNP types, and keep the one with the best (lowest) AoU p-value
+cleaned <- combined_meta_snp %>% group_by(gene_name, phenotype_name) %>%
+  slice_min(pvalue_aou, n = 1, with_ties = FALSE) %>% 
+  ungroup() %>% select(gene, gene_name, phenotype_name, method, db_pop, data_type, effect_size_aou,pvalue_aou, effect_size_ukbb, pvalue_ukbb) %>% arrange(gene_name)
+
+head(cleaned)
+length(cleaned$gene_name)
+
+fwrite(cleaned, "~/validated_proteins_unique_gene_phenotype.tsv", sep = "\t", col.names = TRUE)
+
+fwrite(combined_meta_snp, "~/validated_proteins_withsnp.tsv", sep = "\t", col.names = TRUE)
+
+#filter for unique gene-phenotype pairs so that we don't have multiple rows for the same gene-phenotype pair if they replicate across multiple methods or SNP types, and keep the one with the best (lowest) AoU p-value
+cleaned <- combined_meta_snp %>% group_by(gene_name, phenotype_name) %>%
+  slice_min(pvalue_ukbb, n = 1, with_ties = FALSE) %>% 
+  ungroup() %>% select(gene, gene_name, phenotype_name, method, db_pop, data_type, effect_size_aou,pvalue_aou, effect_size_ukbb, pvalue_ukbb) %>% arrange(gene_name)
+
+head(cleaned)
+length(cleaned$gene_name)
+
+fwrite(cleaned, "~/validated_proteins_unique_gene_phenotype_ukbbp.tsv", sep = "\t", col.names = TRUE)
+
+fwrite(combined_meta_snp, "~/validated_proteins_withsnp.tsv", sep = "\t", col.names = TRUE)
+```
