@@ -1,0 +1,377 @@
+---
+title: "Cis MultiSuSiE Fine-Mapping"
+author: "Claudia Krueger"
+date: "2026-03-23"
+output: html_document
+---
+
+**Make .bgen files**
+```{bash}
+#make .bgen
+plink2 --pfile ~/ancestry_specific_folder/ancestry_final --export bgen-1.2 --out ~/ancestry_specific_folder/ancestry_final 
+
+#make .bgen.bgi
+~/multi_susie/bgen/build/apps/bgenix -g ~/ancestry_specific_folder/ancestry_final.bgen -index 
+```
+
+**Make zfiles**
+```{bash}
+#make .z file
+awk 'NR==1 {print "rsid chromosome position allele1 allele2"} NR>1 {gsub(/^chr/, "", $1); if($1=="23") $1="X"; print $3, $1, $2, $5, $4}' ~/ancestry_specific_folder/ancestry_final.pvar > ~/ancestry_specific_folder/ancestry_final.z
+
+tail ~/ancestry_specific_folder/ancestry_final.z
+
+#read the windows file (skip header)
+tail -n +2 ~/sushie/cis_windows.txt | while IFS=$'\t' read -r olinkid chr left right; do
+    echo "Creating z file for $olinkid on $chr:$left-$right"
+    
+    #extract variants in this region from your .z file
+    awk -v chr="$chr" -v start="$left" -v end="$right" \
+        'NR==1 {print} NR>1 && $2==chr && $3>=start && $3<=end' \
+        ~/ancestry_specific_folder/ancestry_final.z > \
+        ~/multi_susie/z_files/ancestry_specific_folder/${olinkid}.z
+done
+```
+
+**Make master files**
+```{bash}
+#create the master file with header
+echo "z;bgen;bgi;bcor;n_samples" > ~/multi_susie/master_files/ancestry_specific_master.txt
+
+#read the windows file (skip header) and add each protein as a line
+tail -n +2 ~/sushie/cis_windows.txt | while IFS=$'\t' read -r olinkid chr left right; do
+    
+    #add line for protein
+    echo "~/multi_susie/z_files/ancestry_specific_folder/${olinkid}.z;~/ancestry_specific_folder/ancestry_final.bgen.bgi;~/multi_susie/ld_files/ancestry_specific_folder/${olinkid}.bcor;366" >> ~/multi_susie/master_files/ancestry_specific_master.txt
+done
+
+echo "Done creating master file"
+echo "Total proteins: $(( $(wc -l < ~/multi_susie/master_files/ancestry_specific_master.txt) - 1 ))"
+```
+
+**Make .bcor files**
+```{bash}
+~/multi_susie/ldstore_v2.0_x86_64/ldstore_v2.0_x86_64 --in-files ~/multi_susie/master_files/ancestry_specific_master.txt --write-bcor --read-only-bgen --n-threads 10
+```
+
+**Run MultiSuSiE Fine-mapping**
+```{python}
+def build_rlist(protein_id, ldstore_path="~/multi_susie/ldstore_v2.0_x86_64/ldstore_v2.0_x86_64"):
+    R_list = []
+
+    work_dir = f'~/multi_susie/tmp/{protein_id}'
+    os.makedirs(work_dir, exist_ok=True)
+    original_dir = os.getcwd()
+    os.chdir(work_dir)
+
+    for ancestry in ancestries:
+        bcor_file = f'~/multi_susie/ld_files/{ancestry}/{protein_id}.bcor'
+        tmp_ld_file = f'{work_dir}/{protein_id}_{ancestry}.ld'
+        try:
+            cmd = f"{ldstore_path} --bcor-to-text --bcor-file {bcor_file} --ld-file {tmp_ld_file} > /dev/null 2>&1"
+
+            #retry ldstore up to 3 times with LD matrix validation
+            max_attempts = 3
+            ld_matrix = None
+            for attempt in range(max_attempts):
+                os.system(cmd)
+                if not os.path.exists(tmp_ld_file) or os.path.getsize(tmp_ld_file) == 0:
+                    print(f"Retry {attempt + 1}/{max_attempts} — empty file for {protein_id} {ancestry}")
+                    continue
+                try:
+                    ld_matrix = np.loadtxt(tmp_ld_file)
+                    if ld_matrix.ndim != 2 or ld_matrix.shape[0] != ld_matrix.shape[1]:
+                        raise ValueError(f"LD matrix not square: {ld_matrix.shape}")
+                    break  # success
+                except Exception as e:
+                    print(f"Retry {attempt + 1}/{max_attempts} — malformed file for {protein_id} {ancestry}: {e}")
+                    ld_matrix = None
+                    if os.path.exists(tmp_ld_file):
+                        os.remove(tmp_ld_file)
+
+            if ld_matrix is None:
+                print(f"Error: ldstore failed after {max_attempts} attempts for {protein_id} {ancestry}")
+                os.chdir(original_dir)
+                return None
+
+            print(f"loaded LD matrix for {protein_id} {ancestry}")
+            R_list.append(ld_matrix)
+
+        except Exception as e:
+            print(f"Error processing r_list {protein_id} {ancestry}: {e}")
+            os.chdir(original_dir)
+            return None
+        finally:
+            if os.path.exists(tmp_ld_file):
+                os.remove(tmp_ld_file)
+
+    os.chdir(original_dir)
+    try:
+        os.rmdir(work_dir)
+    except:
+        pass
+
+    return R_list
+
+#build beta and se lists
+def build_b_and_se_list(protein_id, chrom):
+    b_list = []
+    se_list = []
+    nominal_data = []
+    for ancestry in ancestries:
+        try:
+            file_path = f"~/ancestry_specific_folder/tensorqtl/nominal/nominalchr{chrom}cis_qtls.gz"
+            nominal_content = pd.read_csv(file_path, sep='\t', compression='gzip')
+            nominal_oid = nominal_content[nominal_content['phenotype_id'] == protein_id]
+            nominal_data.append(nominal_oid)
+            b_list.append(nominal_oid['slope'].tolist())
+            se_list.append(nominal_oid['slope_se'].tolist())
+        except Exception as e:
+            print(f"Error processing b_list or se_list {protein_id} {ancestry}: {e}")
+            return None
+    return b_list, se_list, nominal_data
+
+#build var y list
+def build_varY_list(protein_id):
+    varY_list = []
+    for ancestry in ancestries:
+        try:
+            file_path = f"~/ancestry_specific_folder/tensor_lm_table.bed"
+            lm_table = pd.read_csv(file_path, sep='\t')
+            lm_table_oid = lm_table[lm_table['gene_id'] == protein_id]
+            if len(lm_table_oid) > 1:
+                print(f"Warning: multiple rows found for {protein_id} in {ancestry}, using first")
+            protein_levels = lm_table_oid.filter(regex='^NWD').iloc[0].tolist()
+            protein_variance = np.var(protein_levels, ddof=1)
+            varY_list.append(float(protein_variance))
+        except Exception as e:
+            print(f"Error processing varY_list {protein_id} {ancestry}: {e}")
+            return None
+    return varY_list
+
+#subset to common snps and regularize ld
+def subset_to_common_snps(R_list, b_list, se_list, nominal_data):
+
+    #handle LD/nominal size mismatches
+    for i, R in enumerate(R_list):
+        n_snps_ld = R.shape[0]
+        n_snps_nominal = len(nominal_data[i])
+        if n_snps_ld != n_snps_nominal:
+            print(f"Warning: {ancestries[i]} - LD matrix has {n_snps_ld} SNPs but nominal data has {n_snps_nominal} SNPs")
+            min_snps = min(n_snps_ld, n_snps_nominal)
+            R_list[i] = R[:min_snps, :min_snps]
+            b_list[i] = b_list[i][:min_snps]
+            se_list[i] = se_list[i][:min_snps]
+            nominal_data[i] = nominal_data[i].iloc[:min_snps].reset_index(drop=True)
+
+    #find common SNPs across all ancestries
+    snp_sets = [nominal['variant_id'].tolist() for nominal in nominal_data]
+    common_snps = set(snp_sets[0])
+    for snp_set in snp_sets[1:]:
+        common_snps = common_snps.intersection(set(snp_set))
+    common_snps = list(common_snps)
+    print(f"Common SNPs across all ancestries: {len(common_snps)}")
+
+    #subset to common SNPs and regularize LD
+    R_list_subset = []
+    b_list_subset = []
+    se_list_subset = []
+    index_mapping = []
+
+    for i in range(len(ancestries)):
+
+        #find indices of common SNPs in this ancestry
+        snp_indices = []
+        for snp in common_snps:
+            try:
+                idx = snp_sets[i].index(snp)
+                snp_indices.append(idx)
+            except ValueError:
+                print(f"Warning: SNP {snp} not found in {ancestries[i]}")
+        snp_indices.sort()
+
+        #subset LD matrix and data
+        R_subset = R_list[i][np.ix_(snp_indices, snp_indices)]
+
+        #convert to numpy arrays
+        b_subset = np.array([b_list[i][idx] for idx in snp_indices], dtype=np.float32)
+        se_subset = np.array([se_list[i][idx] for idx in snp_indices], dtype=np.float32)
+
+        #index mapping for reference
+        ancestry_mapping = []
+        for post_idx, pre_idx in enumerate(snp_indices):
+            ancestry_mapping.append({
+                'SNP': snp_sets[i][pre_idx],
+                'pre_filter_index': pre_idx,
+                'post_filter_index': post_idx,
+                'ancestry': ancestries[i]
+            })
+        index_mapping.append(ancestry_mapping)
+
+        R_list_subset.append(R_subset)
+        b_list_subset.append(b_subset)
+        se_list_subset.append(se_subset)
+
+    #order common SNPs by position in first ancestry
+    first_ancestry_indices = []
+    for snp in common_snps:
+        idx = snp_sets[0].index(snp)
+        first_ancestry_indices.append((idx, snp))
+    first_ancestry_indices.sort()
+    ordered_common_snps = [snp for idx, snp in first_ancestry_indices]
+
+    return R_list_subset, b_list_subset, se_list_subset, ordered_common_snps, index_mapping
+
+#function
+R_list = build_rlist(protein_id)
+if R_list is None:
+    print(f"NO_CREDIBLE_SETS: Failed to build LD list for {protein_id}")
+    sys.exit(0)
+
+result = build_b_and_se_list(protein_id, chrom)
+if result is None:
+    print(f"NO_CREDIBLE_SETS: Failed to build b/se list for {protein_id}")
+    sys.exit(0)
+b_list, se_list, nominal_data = result
+
+varY_list = build_varY_list(protein_id)
+if varY_list is None:
+    print(f"NO_CREDIBLE_SETS: Failed to build varY list for {protein_id}")
+    sys.exit(0)
+
+R_list, b_list, se_list, common_snp_ids, index_mapping = subset_to_common_snps(
+    R_list, b_list, se_list, nominal_data
+)
+
+#run multisusie
+try:
+    ss_fit = MultiSuSiE.multisusie_rss(
+        b_list = b_list,
+        s_list = se_list,
+        R_list = R_list,
+        varY_list = varY_list,
+        rho = np.array([[1.0,  0.75, 0.75, 0.75],
+                        [0.75, 1.0,  0.75, 0.75],
+                        [0.75, 0.75, 1.0,  0.75],
+                        [0.75, 0.75, 0.75, 1.0]]),
+        population_sizes = [1270, 675, 366, 642],
+        L = 10,
+        scaled_prior_variance = 0.2,
+        prior_weights = None,
+        standardize = False,
+        pop_spec_standardization = True,
+        estimate_residual_variance = True,
+        estimate_prior_variance = True,
+        estimate_prior_method = 'early_EM',
+        pop_spec_effect_priors = True,
+        iter_before_zeroing_effects = 5,
+        prior_tol = 1e-9,
+        max_iter = 100,
+        tol = 0.001,
+        verbose = False,
+        coverage = 0.95,
+        min_abs_corr = 0.5,
+        float_type = np.float32,
+        low_memory_mode = True,
+        recover_R = False,
+        single_population_mac_thresh = 0,
+        mac_list = None,
+        multi_population_maf_thresh = 0,
+        maf_list = None,
+        variant_ids = None
+    )
+except Exception as e:
+    print(f"NO_CREDIBLE_SETS: MultiSuSiE failed for {protein_id}: {e}")
+    sys.exit(0)
+
+#extract credible sets
+cs_results = []
+
+if hasattr(ss_fit, 'sets') and ss_fit.sets[0]:
+    credible_sets  = ss_fit.sets[0]
+    purity         = ss_fit.sets[1]
+    coverage       = ss_fit.sets[2]
+    passed_filter  = ss_fit.sets[3]
+
+    has_valid_cs = False
+    for cs_idx, credible_set in enumerate(credible_sets):
+        if passed_filter[cs_idx] and len(credible_set) > 0:
+            has_valid_cs = True
+            for variant_idx in credible_set:
+                actual_snp_id = (common_snp_ids[variant_idx]
+                                 if variant_idx < len(common_snp_ids)
+                                 else f"variant_{variant_idx}")
+                cs_results.append({
+                    'OlinkID':     protein_id,
+                    'SNP':         actual_snp_id,
+                    'Index':       variant_idx,
+                    'CredibleSet': cs_idx + 1,
+                    'PIP':         ss_fit.pip[variant_idx],
+                    'Purity':      purity[cs_idx],
+                    'Coverage':    coverage[cs_idx]
+                })
+
+    if has_valid_cs:
+        cs_results_df = pd.DataFrame(cs_results)
+        cs_results_df.to_csv(
+            f'~/multi_susie/output/{protein_id}_credible_sets.tsv',
+            sep="\t", index=False
+        )
+        print(f"SUCCESS: Found {len(set([r['CredibleSet'] for r in cs_results]))} credible sets for {protein_id}")
+    else:
+        print(f"NO_CREDIBLE_SETS: No valid credible sets found for {protein_id}")
+else:
+    print(f"NO_CREDIBLE_SETS: Multi-SuSiE did not identify any credible sets for {protein_id}")
+```
+
+**Combine files**
+```{r}
+library(dplyr)
+library(stringr)
+
+#root directory where condensed finemap files are located
+root_dir <- "~/multi_susie/finemap_output"
+
+# Find all condensed finemap files
+condensed_files <- list.files(path = root_dir, pattern = "*_credible_sets.tsv$", recursive = TRUE, full.names = TRUE)
+cat("Found", length(condensed_files), "condensed finemap files\n")
+
+#process all files and combine using rbind
+all_data <- list()
+for (i in 1:length(condensed_files)) {
+  file <- condensed_files[i]
+  tryCatch({
+    # Read the file (only keeping the needed columns)
+    data <- read.table(file, header = TRUE, sep = "\t", stringsAsFactors = FALSE)
+    
+    #keep only the columns we want
+    if (all(c("OlinkID", "SNP", "Index", "CredibleSet", "PIP", "Purity", "Coverage") %in% colnames(data))) {
+      data <- data[, c("OlinkID", "SNP", "CredibleSet", "PIP")]
+      all_data[[i]] <- data
+      cat("Added data from:", file, "\n")
+    } else {
+      cat("File missing required columns, skipping:", file, "\n")
+    }
+  }, error = function(e) {
+    cat("ERROR processing file:", file, ":", e$message, "\n")
+  })
+}
+
+#combine all successful results
+combined_results <- do.call(rbind, all_data)
+
+#count unique gene_id and cs_label pairs
+gene_cs_pairs <- combined_results %>%
+  select(OlinkID, CredibleSet) %>%
+  distinct()
+
+num_unique_pairs <- nrow(gene_cs_pairs)
+
+#write the combined results to a file
+write.table(combined_results, "~/multi_susie/cis_finemap_combined.tsv", sep = "\t", row.names = FALSE, quote = FALSE)
+
+cat("\nCombined results saved to:", combined_file_path, "\n")
+cat("Total rows in combined results:", nrow(combined_results), "\n")
+cat("Number of unique gene_id and cs_label pairs:", num_unique_pairs, "\n")
+```
+

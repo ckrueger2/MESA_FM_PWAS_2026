@@ -1,0 +1,392 @@
+---
+title: "Replicate Statistically Significant MESA SNPs in UKB"
+author: "Claudia Krueger"
+date: "2025-07-10"
+output: html_document
+---
+
+**Find Cis Qvalues to Isolate Statistically Significant MESA cis-SNPs**
+TensorQTL only outputs a single qvalue/protein, therefore SNP level qvalues need to be calculated with the qvalue R package
+
+```{r}
+library(data.table)
+library(dplyr)
+library(qvalue)
+set.seed(123)
+
+#initiate list
+cis_data <- list()
+pvals <- list()
+
+#loop through chromosomes to save to individual variables
+for(chr in 1:23) {
+  cat("Starting Chr:", chr, "\n")
+  gz_con <- gzfile(paste0("~/ancestry_specific_folder/tensorqtl/nominal/nominalchr", chr, "cis_qtls.gz"), "rt")
+  cis_data[[chr]] <- read.table(gz_con, header = TRUE, sep = "\t")
+  close(gz_con)
+  pvals[[chr]] <- cis_data[[chr]]$pval_nominal
+}
+
+#combine all p-values and track which chromosome each came from
+all_pvals <- unlist(pvals)
+chr_indices <- rep(1:23, sapply(pvals, length))
+
+#calculate q-values
+qobj <- qvalue(all_pvals)
+all_qvals <- qobj$qvalues
+
+#split q-values back to original chromosome structure
+qvals_by_chr <- split(all_qvals, chr_indices)
+
+#add q-values back to each chromosome's data and filter
+filtered_cis_data <- list()
+
+for(chr in 1:23) {
+  cis_data[[chr]]$qval <- qvals_by_chr[[chr]] #add q-values to this chromosome's data
+  filtered_cis_data[[chr]] <- cis_data[[chr]][cis_data[[chr]]$qval < 0.05, ] #filter for significant q-values (< 0.05)
+  cat("Chr", chr, "- Total:", nrow(cis_data[[chr]]), "Significant:", nrow(filtered_cis_data[[chr]]), "\n")
+}
+
+#combine all filtered data into one dataframe
+all_significant_qtls <- do.call(rbind, filtered_cis_data)
+
+#write out the filtered combined file
+write.table(all_significant_qtls, "~/ancestry_specific_folder/tensorqtl/nominal/all_cis_qtls_qval_package_filtered.tsv", sep = "\t", row.names = FALSE, quote = FALSE)
+
+#print summary from qvalue object
+cat("Estimated pi0 (proportion of true nulls):", qobj$pi0, "\n")
+cat("Total significant QTLs (q < 0.05):", nrow(all_significant_qtls), "\n")
+```
+
+**Isolate Statistically Significant MESA trans-SNPs**
+```{bash}
+#unzip original TensorQTL output
+gunzip ~/ancestry_specific_folder/tensorqtl/trans/trans_perm.tsv.gz 
+
+#filter by qval column < 0.05
+awk 'NR==1 || $14 < 0.05' ~/ancestry_specific_folder/tensorqtl/trans/trans_perm.tsv > ~/ancestry_specific_folder/tensorqtl/trans/qval_filt_trans_perm.tsv &
+```
+
+**Validate MESA cis- and trans-pQTL SNPs in UKBB Olink pQTL summary statistics**
+```{python}
+import pandas as pd
+import numpy as np
+import os
+import gzip
+import re
+from pathlib import Path
+import subprocess
+
+def extract_oid_from_filename(filename):
+    #extract OID number from filename
+    match = re.search(r'OID(\d+(?:\.\d+)?)', filename)
+    return match.group(1) if match else None
+
+def load_cis_qtl_data(cis_qtl_file):
+    #load cis QTL data and parse genomic coordinates
+    print("Loading cis QTL data...")
+    cis_qtl = pd.read_csv(cis_qtl_file, sep='\t')
+
+    variant_parts = cis_qtl['variant_id'].str.split(':', expand=True)
+    cis_qtl['CHROM'] = variant_parts[0]
+    cis_qtl['GENPOS'] = variant_parts[1].astype(int)
+    cis_qtl['QTL_REF'] = variant_parts[2]
+    cis_qtl['QTL_ALT'] = variant_parts[3]
+
+    cis_qtl['allele_key'] = cis_qtl['QTL_REF'] + ':' + cis_qtl['QTL_ALT']
+
+    cis_qtl = cis_qtl.rename(columns={
+        'phenotype_id': 'OlinkID',
+        'pval_nominal': 'QTL_Pvalue',
+        'slope': 'QTL_BETA',
+        'slope_se': 'QTL_SE',
+        'qval': 'QTL_qvalue',
+        'af': 'QTL_AF'
+    })
+
+    cis_qtl['CHROM'] = cis_qtl['CHROM'].replace({'chrX': 'chr23', 'X': 'chr23', '23': 'chr23'})
+
+    print(f"Loaded {len(cis_qtl)} cis QTL associations")
+    return cis_qtl
+
+def load_trans_qtl_data(trans_qtl_file):
+    #oad trans QTL data and parse genomic coordinates
+    print("Loading trans QTL data...")
+    trans_qtl = pd.read_csv(trans_qtl_file, sep='\t')
+
+    variant_parts = trans_qtl['variant_id'].str.split(':', expand=True)
+    trans_qtl['CHROM'] = variant_parts[0]
+    trans_qtl['GENPOS'] = variant_parts[1].astype(int)
+    trans_qtl['QTL_REF'] = variant_parts[2]
+    trans_qtl['QTL_ALT'] = variant_parts[3]
+
+    trans_qtl['allele_key'] = trans_qtl['QTL_REF'] + ':' + trans_qtl['QTL_ALT']
+
+    trans_qtl = trans_qtl.rename(columns={
+        'phenotype_id': 'OlinkID',
+        'pval': 'QTL_Pvalue',
+        'b': 'QTL_BETA',
+        'b_se': 'QTL_SE',
+        'qval': 'QTL_qvalue',
+        'af': 'QTL_AF'
+    })
+
+    trans_qtl['CHROM'] = trans_qtl['CHROM'].replace({'chrX': 'chr23', 'X': 'chr23', '23': 'chr23'})
+
+    print(f"Loaded {len(trans_qtl)} trans QTL associations")
+    return trans_qtl
+
+def process_single_gwas_file(file_path, cis_qtl_data, trans_qtl_data, output_dir=None):
+    #process a single GWAS file and create overlapping cis and trans files
+    filename = file_path.name
+    print(f"Processing: {filename}")
+
+    oid = extract_oid_from_filename(filename)
+    if not oid:
+        print(f"Warning: Could not extract OID from {filename}")
+        return None
+
+    try:
+        with gzip.open(file_path, 'rt') as f:
+            df = pd.read_csv(f, sep='\t')
+
+        all_rows = df.copy()
+
+        if len(all_rows) == 0:
+            print(f"No data in {filename}")
+            return {
+                'filename': filename,
+                'oid': oid,
+                'total_variants': 0,
+                'cis_overlap': 0,
+                'trans_overlap': 0,
+                'cis_output_file': None,
+                'trans_output_file': None
+            }
+
+        full_oid = f"OID{oid}"
+        all_rows['OlinkID'] = full_oid
+        all_rows['allele_key'] = (
+            all_rows['ID'].str.split(':').str[2] + ':' +
+            all_rows['ID'].str.split(':').str[3]
+        )
+
+        #rename UKBB columns once
+        ukbb = all_rows.rename(columns={
+            'ID': 'UKBB_ID',
+            'ALLELE0': 'UKBB_A0',
+            'ALLELE1': 'UKBB_A1',
+            'N': 'UKBB_N',
+            'BETA': 'UKBB_BETA',
+            'SE': 'UKBB_SE',
+            'Pvalue': 'UKBB_Pvalue'
+        })
+
+        #cis overlap
+        cis_overlap = pd.DataFrame()
+        qtl_cis_protein = cis_qtl_data[cis_qtl_data['OlinkID'] == full_oid]
+        if len(qtl_cis_protein) > 0:
+            cis_overlap = pd.merge(
+                ukbb, qtl_cis_protein,
+                on=['OlinkID', 'CHROM', 'GENPOS', 'allele_key'],
+                how='inner'
+            )
+            cis_overlap['cis_trans'] = 'cis'
+            cis_cols = ['OlinkID', 'CHROM', 'GENPOS', 'variant_id', 'UKBB_ID',
+                        'QTL_Pvalue', 'UKBB_Pvalue', 'QTL_BETA', 'QTL_SE',
+                        'UKBB_BETA', 'UKBB_SE', 'QTL_qvalue', 'QTL_REF',
+                        'QTL_ALT', 'UKBB_A0', 'UKBB_A1', 'A1FREQ', 'UKBB_N',
+                        'QTL_AF', 'cis_trans']
+            cis_overlap = cis_overlap[[c for c in cis_cols if c in cis_overlap.columns]]
+
+        #trans overlap
+        trans_overlap = pd.DataFrame()
+        qtl_trans_protein = trans_qtl_data[trans_qtl_data['OlinkID'] == full_oid]
+        if len(qtl_trans_protein) > 0:
+            trans_overlap = pd.merge(
+                ukbb, qtl_trans_protein,
+                on=['OlinkID', 'CHROM', 'GENPOS', 'allele_key'],
+                how='inner'
+            )
+            trans_overlap['cis_trans'] = 'trans'
+            trans_cols = ['OlinkID', 'CHROM', 'GENPOS', 'variant_id', 'UKBB_ID',
+                          'QTL_Pvalue', 'UKBB_Pvalue', 'QTL_BETA', 'QTL_SE',
+                          'UKBB_BETA', 'UKBB_SE', 'QTL_qvalue', 'QTL_REF',
+                          'QTL_ALT', 'UKBB_A0', 'UKBB_A1', 'A1FREQ', 'UKBB_N',
+                          'QTL_AF', 'cis_trans']
+            trans_overlap = trans_overlap[[c for c in trans_cols if c in trans_overlap.columns]]
+
+        #save
+        cis_output_file = None
+        trans_output_file = None
+
+        if output_dir:
+            for overlap_df, label in [(cis_overlap, 'cis'), (trans_overlap, 'trans')]:
+                if len(overlap_df) > 0:
+                    out_path = Path(output_dir) / f"{full_oid}_{label}_overlap.tsv"
+                    overlap_df.to_csv(out_path, sep='\t', index=False)
+                    print(f"Saved {len(overlap_df)} {label} overlapping variants to {out_path}")
+                    try:
+                        subprocess.run(['gzip', '-f', str(out_path)], check=True)
+                        out_path = Path(str(out_path) + '.gz')
+                        print(f"Compressed to {out_path}")
+                    except subprocess.CalledProcessError as e:
+                        print(f"Warning: Failed to gzip {out_path}: {e}")
+                    if label == 'cis':
+                        cis_output_file = str(out_path)
+                    else:
+                        trans_output_file = str(out_path)
+                else:
+                    print(f"No {label} overlapping variants found for {full_oid}")
+
+        print(f"  Total variants: {len(all_rows)}")
+        print(f"  Cis QTL variants for protein: {len(qtl_cis_protein)}  |  overlap: {len(cis_overlap)}")
+        print(f"  Trans QTL variants for protein: {len(qtl_trans_protein)}  |  overlap: {len(trans_overlap)}")
+
+        return {
+            'filename': filename,
+            'oid': oid,
+            'full_oid': full_oid,
+            'total_variants': len(all_rows),
+            'cis_overlap': len(cis_overlap),
+            'trans_overlap': len(trans_overlap),
+            'cis_output_file': cis_output_file,
+            'trans_output_file': trans_output_file
+        }
+
+    except Exception as e:
+        print(f"Error processing {filename}: {str(e)}")
+        return None
+
+def process_gwas_files(folder_path, cis_qtl_file, trans_qtl_file, output_dir=None):
+    """Process all GWAS files in folder against cis and trans QTL data"""
+    if output_dir:
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
+        print(f"Output directory: {output_dir}")
+
+    cis_qtl_data = load_cis_qtl_data(cis_qtl_file)
+    trans_qtl_data = load_trans_qtl_data(trans_qtl_file)
+
+    folder = Path(folder_path)
+    gwas_files = list(folder.glob("*.gz"))
+    print(f"Found {len(gwas_files)} files to process...")
+
+    summary_results = []
+
+    for file_path in gwas_files:
+        result = process_single_gwas_file(
+            file_path, cis_qtl_data, trans_qtl_data, output_dir
+        )
+        if result:
+            summary_results.append(result)
+        print("---")
+
+    if summary_results:
+        summary_df = pd.DataFrame(summary_results)
+        print(f"\n=== OVERALL SUMMARY ===")
+        print(f"Files processed: {len(summary_results)}")
+        print(f"Total variants: {summary_df['total_variants'].sum()}")
+        print(f"Total cis overlap: {summary_df['cis_overlap'].sum()}")
+        print(f"Total trans overlap: {summary_df['trans_overlap'].sum()}")
+
+        if output_dir:
+            summary_file = Path(output_dir) / "processing_summary.tsv"
+            summary_df.to_csv(summary_file, sep='\t', index=False)
+            print(f"Summary saved to: {summary_file}")
+
+        return summary_df
+    else:
+        print("No files were successfully processed")
+        return pd.DataFrame()
+
+if __name__ == "__main__":
+    folder_path = "~/ukbio/mesa_comparison/ancestry_specific_folder/"
+    cis_qtl_file = "~/ancestry_specific_folder/tensorqtl/nominal/all_cis_qtls_qval_package_filtered.tsv"
+    trans_qtl_file = "~/ancestry_specific_folder/tensorqtl/trans/trans_perm0.05.tsv"
+    output_dir = "~/ukbio/mesa_comparison/ancestry_specific_folder/"
+
+    summary = process_gwas_files(folder_path, cis_qtl_file, trans_qtl_file, output_dir=output_dir)
+
+    if not summary.empty:
+        print("\nFirst 5 rows of summary:")
+        print(summary.head())
+```
+
+**Merge all overlapping cis SNPs**
+```{bash}
+zcat ~/ukbio/mesa_comparison/ancestry_specific_folder/OID*_cis_overlap.tsv.gz | head -1 > ~/ukbio/mesa_comparison/ancestry_specific_folder/00combined_cis_overlap.tsv
+
+for file in ~/ukbio/mesa_comparison/ancestry_specific_folder/*_cis_overlap.tsv.gz; do
+    zcat "$file" | tail -n +2 >> ~/ukbio/mesa_comparison/ancestry_specific_folder/00combined_cis_overlap.tsv
+done
+```
+
+**Merge all overlapping trans SNPs**
+```{bash}
+zcat ~/ukbio/mesa_comparison/ancestry_specific_folder/OID*_trans_overlap.tsv.gz | head -1 > ~/ukbio/mesa_comparison/ancestry_specific_folder/00combined_trans_overlap.tsv
+
+for file in zcat ~/ukbio/mesa_comparison/ancestry_specific_folder/*_trans_overlap.tsv.gz; do
+    zcat "$file" | tail -n +2 >> zcat ~/ukbio/mesa_comparison/ancestry_specific_folder/00combined_trans_overlap.tsv
+done
+```
+
+**Calculate pi1**
+```{r}
+library(data.table)
+library(dplyr)
+library(qvalue)
+set.seed(123)
+
+cis_data <- fread("~/ukbio/mesa_comparison/ancestry_specific_folder/00combined_cis_overlap.tsv")
+cis_data$QTL_Pvalue[cis_data$QTL_Pvalue == 0] <- 1e-300
+cis_data$UKBB_Pvalue[cis_data$UKBB_Pvalue == 0] <- 1e-300
+
+trans_data <- fread("~/ukbio/mesa_comparison/ancestry_specific_folder/00combined_trans_overlap.tsv")
+trans_data$QTL_Pvalue[trans_data$QTL_Pvalue == 0] <- 1e-300
+trans_data$UKBB_Pvalue[trans_data$UKBB_Pvalue == 0] <- 1e-300
+
+#extract p-values
+cis_pvals_tensor <- cis_data$QTL_Pvalue
+cis_pvals_ukbb <- cis_data$UKBB_Pvalue
+trans_pvals_tensor <- trans_data$QTL_Pvalue
+trans_pvals_ukbb <- trans_data$UKBB_Pvalue
+
+#MESA/tensor qvalue calculations with adjusted lambda (extremely skewed, but we dont use this anyways)
+cis_qobj_tensor <- qvalue(c(cis_pvals_tensor, 1))
+trans_qobj_tensor <- qvalue(c(trans_pvals_tensor, 1))
+
+#UKBB qvalue calculations with default parameters
+cis_qobj_ukbb <- qvalue(cis_pvals_ukbb)
+trans_qobj_ukbb <- qvalue(trans_pvals_ukbb)
+
+#calculate π1 statistics
+cis_pi1_tensor <- 1 - cis_qobj_tensor$pi0
+cis_pi1_ukbb <- 1 - cis_qobj_ukbb$pi0
+trans_pi1_tensor <- 1 - trans_qobj_tensor$pi0
+trans_pi1_ukbb <- 1 - trans_qobj_ukbb$pi0
+
+#calculate overlap statistics
+cis_oid_overlap <- n_distinct(cis_data$OlinkID)
+trans_oid_overlap <- n_distinct(trans_data$OlinkID)
+cis_snp_overlap <- n_distinct(cis_data$variant_id)
+trans_snp_overlap <- n_distinct(trans_data$variant_id)
+cis_oid_snp_overlap <- nrow(cis_data)
+trans_oid_snp_overlap <- nrow(trans_data)
+
+#create results data frame
+results <- data.frame(
+  Dataset = c("MESA", "UKBB", "MESA", "UKBB"),
+  Type = c("Cis", "Cis", "Trans", "Trans"),
+  OID_Overlap = c(cis_oid_overlap, cis_oid_overlap, trans_oid_overlap, trans_oid_overlap),
+  Unique_SNP_Overlap = c(cis_snp_overlap, cis_snp_overlap, trans_snp_overlap, trans_snp_overlap),
+  OID_SNP_Pair_Overlap = c(cis_oid_snp_overlap, cis_oid_snp_overlap, trans_oid_snp_overlap, trans_oid_snp_overlap),
+  pi1 = c(cis_pi1_tensor, cis_pi1_ukbb, trans_pi1_tensor, trans_pi1_ukbb),
+  stringsAsFactors = FALSE
+)
+
+print(results)
+
+#save
+write.table(results, "~/ukbio/mesa_comparison/ancestry_specific_folder/00overlap_stats.tsv",
+            sep = "\t", row.names = FALSE, quote = FALSE, col.names = TRUE)
+```
