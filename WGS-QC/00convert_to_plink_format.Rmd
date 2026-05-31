@@ -1,0 +1,35 @@
+---
+title: "File Conversions to Plink Format"
+author: "Claudia Krueger"
+date: "9/14/2024"
+output: html_document
+---
+
+**bcftools view raw.bcf (illumina)-> raw.vcf**
+bcftools view: view or convert bcf or vcf file
+-0 v: tells bcftools to convert to vcf file
+-o file.vcf: name of output file
+file.bcf: name of input file
+
+```{bash}
+bcftools view -O v -o chromosome_file.vcf chromosome_file.bcf
+```
+
+**convert vcf -> ped**
+plink: package used
+--vcf file.vcf: name of input file
+--recode: tells plink to convert to ped/map file
+--out file: name of output file
+
+```{bash}
+plink --vcf chromsome_file.vcf --recode --out chromsome_file
+```
+
+**convert .ped and .map files to .bed, .bim, and .fam**
+--file: input .ped and .map name
+--make-bed: tells plink to make .bed, .bim, and .fam files
+--out: name of new .bed, .bim, .fam files
+
+```{bash}
+plink --file chromsome_file --make-bed --out chromsomes_file
+```
