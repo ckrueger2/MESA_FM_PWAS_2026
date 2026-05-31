@@ -12,6 +12,20 @@ This directory contains analysis scripts and resources used to build and evaluat
 	- `final_qc_plinkfiles.rmd` — RMarkdown documenting / creating final PLINK files
 	- `x_chromosome_qc.rmd` — chromosome X QC workflow
 
+- **qtl_mapping/**: Protein quantitative trait loci mapping with TensorQTL
+	- `01tensorqtl_formatting.Rmd` - formatting genotype files and phenotype .bed file for TensorQTL input
+	- `02tensorqtl_mapping.Rmd` - cis- and trans- pQTL mapping (cis_nominal, cis_empirical, trans)
+
+- **fine_mapping/**: Cross-ancestry and cross-model fine-mapping in TOPMed MESA and UKB
+	- `01tensorqtl_susie.Rmd` - TOPMed MESA TensorQTL Sum of Single Effects (SuSiE) implementation across ALL, EUR, AFR, HIS, and CHN - cis and trans
+	- `02susieR.Rmd` - TOPMed MESA SusieR implementation across ALL, EUR, AFR, HIS, and CHN - cis and trans
+	- `03sushie.Rmd` - TOPMed MESA Sum of Shared Effects (SuShiE) - cis META output
+	- `04multi.Rmd` - TOPMed MESA MultiSuSiE - cis META output
+	- `05susieX.Rmd` - TOPMed MESA SuSiEx - cis META output
+	- `06ukb_sum_stats_processing.Rmd` - Download and formatting of UKB pQTL summary statistics
+	- `07ukb_mesa_pqtl_replication.Rmd` - pSNP replication and pi1 calculation of TOPMed MESA in UKB
+	- `08ukb_mesa_finemap_replication.Rmd` - UKB SusieR, SuShiE, MultiSuSiE, and SuSiEx fine-mapping followed by precision, recall, and F1 calculations with TOPMed MESA ALL fine-mapping output
+
 - **elastic-net/**: Elastic net model training and nested cross-validation for GTEx-derived features
 	- `fm_cistrans_gtex_tiss_chrom_training.R` - create cis+trans FM EN models
 	- `fm_cistrans_gtex_v7_nested_cv_elnet.R` - create cis+trans FM EN models
@@ -32,9 +46,15 @@ This directory contains analysis scripts and resources used to build and evaluat
 	- `make_UDR_db_top250_snps.R` — create MASHR DB using top 250 SNPs
 	- `run_udr.R` — script to run UDR
 
+- **pwas/**: PWAS with TOPMed MESA trained EN, MASHR, and UDR models in AoU and Pan-UKB
+	- `01pwas_in_aou.Rmd` - pre-processing of data and running PWAS analysis in All of Us (AoU) Researcher Workbench
+ 	- `02pwas_in_ukb.Rmd` - pre-processing of Pan-UKB phenotype summary statistics and PWAS analysis
+  	- `03pwas_replication.Rmd` - Bonferroni-significant protein-trait associations in AoU that replicated in Pan-UKB
+  	- `04mesa_aou_coloc.Rmd` - Colocalization analysis with TOPMed MESA cis-pQTLs and AoU protein-coding regions
+
 ## Usage
 
-- Most scripts are written for R; run with `Rscript <script.R>` or open the `.rmd` files in RStudio.
+- Most scripts are written for R; run with `Rscript <script.R>` or open the `.Rmd` files in RStudio.
 - Check the top of each script for required package lists and input/output path expectations.
 
 ## Dependencies
