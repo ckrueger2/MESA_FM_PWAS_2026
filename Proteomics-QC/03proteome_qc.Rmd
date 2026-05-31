@@ -1,0 +1,176 @@
+---
+title: "Proteome Quality Control"
+author: "Claudia Krueger"
+date: "2025-01-09"
+output: html_document
+---
+
+Merge proteomic data and phenotype data
+
+**input data**
+```{r}
+#read in olink data
+proteomic_data <- fread("/home/wheelerlab3/Data/TOPMed/2024-05-03_TOPMed_MESA_Proteomics_Olink/Proteomics_Olink/Mapping_SMP_Plate_20240514.csv", header = TRUE, sep = ",")
+proteomic_data <- data.frame(lapply(proteomic_data, as.character), stringsAsFactors = FALSE) #make data types characters
+
+#read in final qc file
+qc_file <- fread("~/ancestry_specific_folder/new_plink_files/final_qc.fam", header = FALSE, sep = " ")
+colnames(qc_file) <- c("FID", "IID", "PAT", "MAT", "SEX", "PHENOTYPE")
+qc_file <- data.frame(lapply(qc_file, as.character), stringsAsFactors = FALSE) #make data types characters
+
+#read in topmed mesa data that is merged with proteomic data
+proteomics_mesa <-fread("~/ancestry_specific_folder/proteomics_mesa.txt", header = TRUE, sep = "\t")
+proteomics_mesa <- data.frame(lapply(proteomics_mesa, as.character), stringsAsFactors = FALSE)
+
+#read in consent 1 file
+consent_one <- read.table(gzfile("/home/wheelerlab3/Data/MESA_dbGaP_phenotypes/RootStudyConsentSet_phs000209.MESA.v13.p3.c1.HMB/PhenotypeFiles/phs000209.v13.pht001116.v10.p3.c1.MESA_Exam1Main.HMB.txt.gz"), header=T, sep ="\t")
+consent_one <- data.frame(lapply(consent_one, as.character), stringsAsFactors = FALSE) #make data types characters
+
+#read in consent 2 file
+consent_two <- read.table(gzfile("/home/wheelerlab3/Data/MESA_dbGaP_phenotypes/RootStudyConsentSet_phs000209.MESA.v13.p3.c2.HMB-NPU/PhenotypeFiles/phs000209.v13.pht001116.v10.p3.c2.MESA_Exam1Main.HMB-NPU.txt.gz"), header=T, sep = "\t")
+consent_two <- data.frame(lapply(consent_two, as.character), stringsAsFactors = FALSE) #make data types characters
+
+#read in consent 1 exam file
+one_exam <- fread("/home/wheelerlab3/Data/TOPMed/2024-05-03_TOPMed_MESA_Proteomics_Olink/Proteomics_Olink/dbGaP_pheno_download_2024-11-18/phs001416.v4.pht010511.v2.p1.c1.TOPMed_MESA_Proteomics_Sample_Attributes.HMB.txt.gz", header=T, sep ="\t", skip = 10)
+one_exam <- data.frame(lapply(one_exam, as.character), stringsAsFactors = FALSE) #make data types characters
+
+#read in consent 2 exam file
+two_exam <- fread("/home/wheelerlab3/Data/TOPMed/2024-05-03_TOPMed_MESA_Proteomics_Olink/Proteomics_Olink/dbGaP_pheno_download_2024-11-18/phs001416.v4.pht010511.v2.p1.c2.TOPMed_MESA_Proteomics_Sample_Attributes.HMB-NPU.txt.gz", header=T, sep="\t", skip = 10)
+two_exam <- data.frame(lapply(two_exam, as.character), stringsAsFactors = FALSE) #make data types characters
+```
+
+**merge data values together to make desired data table**
+```{r}
+#merge qc file with additional info from proteomics_mesa file
+qc_data <- left_join(qc_file, proteomics_mesa, by=c("FID", "IID", "PAT", "MAT", "SEX", "PHENOTYPE"))
+
+#merged consent 1 and proteomic mesa files
+mesa_c_one <- left_join(qc_data, consent_one, by=c("dbGaP_Subject_ID"="dbGaP_Subject_ID"))
+
+#merged consent 2 and proteomic mesa files
+mesa_c_two <- left_join(qc_data, consent_two, by=c("dbGaP_Subject_ID"="dbGaP_Subject_ID"))
+
+#merge both consents
+final_mesa <- full_join(mesa_c_one, mesa_c_two, by = "dbGaP_Subject_ID", suffix = c(".one", ".two"))
+
+#use coalesce to fill missing values from one table with the other
+final_mesa <- final_mesa %>%
+  mutate(across(
+    .cols = -dbGaP_Subject_ID,  # don't apply coalesce to dbGaP_Subject_ID column
+    .fns = ~ coalesce(.x, get(gsub("\\.one$", ".two", cur_column())))
+  )) %>%
+  select(-ends_with(".two")) %>%  #remove the .two columns (from second table)
+  rename_with(~ gsub("\\.one$", "", .), ends_with(".one"))  #remove ".one" suffix from column names
+
+#merge proteomic and qc consent data
+sidno_proteomics <- left_join(final_mesa, proteomic_data, by=c("SUBJECT_ID"="sidno"))
+
+#merge exam info
+exams <- rbind(one_exam, two_exam)
+
+#merge exam with qc'd proteomic data
+final_sidno_proteomics <- left_join(sidno_proteomics, exams, by=c("SampleID"="Investigator_ID"))
+final_sidno_proteomics <- final_sidno_proteomics %>%
+  select(-ends_with(".y")) #remove duplicated
+
+#filter columns to make a smaller file
+filtered_mesa_proteome <- select(final_sidno_proteomics, "FID", "IID", "PAT", "MAT", "SEX",
+                                 "PHENOTYPE", "dbGaP_Subject_ID", "dbGaP_Sample_ID.x", "SUBJECT_ID",
+                                 "sidno", "age1c", "agecat1c", "race1c.x", 
+                                 "lang1", "gender1", "site1c", "month1", "season1", "SampleID",
+                                 "PlateID.x", "TOM_ID.x", "TOP_ID.x", "exam", "SAMPLE_ID",
+                                 "AGE_AT_COLLECTION", "PRIMARY_BIOSAMPLE_TYPE", "COLLECTION_YEAR", 
+                                 "COLLECTION_VISIT", "BODY_SITE", "HISTOLOGICAL_TYPE", "IS_TUMOR",
+                                 "ANALYTE_TYPE")
+sorted_filtered_mesa_proteome <- filtered_mesa_proteome[order(filtered_mesa_proteome$sidno), ]
+
+#write out all population file
+write.table(sorted_filtered_mesa_proteome, file = "~/all_ancestry_folder/protein_sidno_data", quote = FALSE, sep = "\t", row.names = FALSE, col.names = TRUE)
+
+#write out population-specific files
+euro_pop <- filter(sorted_filtered_mesa_proteome, race1c.x == 1)
+write.table(euro_pop, file = "~/ancestry_specific_folder/protein_sidno_data", quote = FALSE, sep = "\t", row.names = FALSE, col.names = TRUE)
+
+afr_pop <- filter(sorted_filtered_mesa_proteome, race1c.x == 2)
+write.table(afr_pop, file = "~/ancestry_specific_folder/protein_sidno_data", quote = FALSE, sep = "\t", row.names = FALSE, col.names = TRUE)
+
+chn_pop <- filter(sorted_filtered_mesa_proteome, race1c.x == 3)
+write.table(chn_pop, file = "~/ancestry_specific_folder/protein_sidno_data", quote = FALSE, sep = "\t", row.names = FALSE, col.names = TRUE)
+
+hisp_pop <- filter(sorted_filtered_mesa_proteome, race1c.x == 4)
+write.table(hisp_pop, file = "~/ancestry_specific_folder/protein_sidno_data", quote = FALSE, sep = "\t", row.names = FALSE, col.names = TRUE)
+
+```
+
+
+Analysis and filtering of Olink data
+
+Analysis is performed for the all ancestry population and repeated for each individual ancestry population
+
+**read in data**
+```{r}
+#read in genomic and phenotypic merged data table
+popinfo <- fread("~/ancestry_specific_folder/protein_sidno_data", header=TRUE, sep = "\t")
+
+#read in protein expression matrix
+olinkdata <- fread("/home/wheelerlab3/Data/TOPMed/2024-05-03_TOPMed_MESA_Proteomics_Olink/Proteomics_Olink/Intensity_Data/SMP_IntensityNormalized_03062024.csv", sep=",", header=TRUE, na.strings = c("", "NA"))
+```
+
+**remove columns with missing data**
+```{r}
+#identify columns with NA values
+columns_with_na <- colnames(olinkdata)[apply(olinkdata, 2, function(x) any(is.na(x)))]
+
+#remove columns with NA values
+olink_no_na <- Filter(function(x) all(!is.na(x)), olinkdata)
+```
+
+**filter out samples that do not exist in both genomic and proteomic data**
+```{r}
+#identify the common SampleIDs
+common_sample_ids <- intersect(popinfo$SampleID, olink_no_na$SampleID)
+
+#filter both tables to keep only rows with common SampleIDs
+filtered_popinfo <- popinfo %>%
+  filter(SampleID %in% common_sample_ids)
+
+filtered_olink <- as.data.frame(olink_no_na) %>%
+  filter(SampleID %in% common_sample_ids)
+
+#write a new population info file
+write.table(filtered_popinfo, "~/ancestry_specific_folder/post_olink_merge_popinfo.txt", sep="\t", row.names=FALSE, quote=FALSE)
+write.table(filtered_olink, "~/ancestry_specific_folder/post_qc_merge_olink.txt", sep="\t", row.names=FALSE, quote=FALSE)
+```
+
+**perform principal component analysis**
+```{r}
+#make first 10 PCAs
+pca_protein <- prcomp(filtered_olink[,-1], rank=10)
+
+#save PCs for future use
+pca_scores <- pca_protein$x
+pca_scores_df <- as.data.frame(pca_scores)
+colnames(pca_scores_df) <- paste("PC", 1:ncol(pca_scores_df), sep = "")
+rownames(pca_scores_df) <- filtered_olink$SampleID
+write.table(pca_scores_df, "~/ancestry_specific_folder/pc_table", row.names = TRUE, col.names = TRUE, sep ="\t", quote=FALSE)
+
+#merge pop info with PC values 
+new_popinfo <- filtered_popinfo %>% select(FID, PAT, MAT, SEX, PHENOTYPE, dbGaP_Subject_ID, dbGaP_Sample_ID.x, sidno, SUBJECT_ID, race1c.x, SampleID, PlateID.x, TOM_ID.x, TOP_ID.x)
+pca_w_popinfo <- cbind(new_popinfo, as.data.frame(pca_protein$x))
+
+#make population numbers to names
+pca_w_popinfo$race1c.x[pca_w_popinfo$race1c.x == 1] <- "EuroA"
+pca_w_popinfo$race1c.x[pca_w_popinfo$race1c.x == 2] <- "ChnA"
+pca_w_popinfo$race1c.x[pca_w_popinfo$race1c.x == 3] <- "AfrA"
+pca_w_popinfo$race1c.x[pca_w_popinfo$race1c.x == 4] <- "HispA"
+
+#output eigenvalues
+eigenvalues <- pca_protein$sdev^2  #square of the standard deviations (sdev)
+eigenvalues_df <- data.frame(PC = paste0("PC", 1:length(eigenvalues)), Eigenvalue = eigenvalues)
+write.table(eigenvalues_df[,2], "~/ancestry_specific_folder/eigenvalues", col.names=FALSE, row.names=FALSE)
+
+#output eigenvectors
+eigenvectors <- pca_protein$rotation  #each column is an eigenvector
+eigenvectors_df <- as.data.frame(eigenvectors)
+write.table(eigenvectors_df, "~/ancestry_specific_folder/eigenvectors", col.names=FALSE, row.names=FALSE)
+```

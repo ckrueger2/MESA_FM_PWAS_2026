@@ -1,0 +1,116 @@
+---
+title: "Protein Chromosome Position Mapping"
+author: "Claudia Krueger"
+date: "2024-12-15"
+output: html_document
+---
+
+Merge Olink IDs with chromosomal positions
+
+**Convert Olink ID to Uniprot ID**
+```{r}
+#read in file with Olink IDs and their respective Uniprot IDs
+olink_uniprot <- fread("/home/wheelerlab3/Data/TOPMed/2024-05-03_TOPMed_MESA_Proteomics_Olink/Proteomics_Olink/Mapping_Olink3K_OlinkID_Key_03062024.csv", header=TRUE)
+
+#read in proteins in the group to be analyzed
+filtered_olink <- fread("~/covar_filtered_olink")
+
+#isolate necessary columns
+filtered_olink_ids <- colnames(filtered_olink)
+olink_uniprot_ids <- select(olink_uniprot, c("OlinkID", "UniProt"))
+
+#only analyze protein IDs that are in the covariate adjusted protein expression matrix
+filtered_uniprot <- olink_uniprot_ids %>%
+  filter(OlinkID %in% filtered_olink_ids)
+
+#write out Uniprot IDs (2882 unique proteins total)
+write.table(filtered_uniprot[,-1], "~/uniprot_ids", quote=FALSE, col.names=FALSE, row.names=FALSE, sep = "\t")
+
+#import list of Uniprot IDs into https://www.uniprot.org/id-mapping; convert to ENSG
+```
+
+Duplicate proteins: P01375, P05231, P10145, P29536, Q14160, P14902, P01375, P05231, P10145, P01375, P05231, P10145, P29536, Q14160, P14902, P29536, Q14160, P14902
+
+Unmapped proteins: Q8NHP1, Q8IWP9, Q6ZMM2, NTproBNP, P24928, P16442, Q02817, Q96KJ4, P54317, P00736, P43627, Q86UX2, E2RYF7, Q8WXW3-4, O15197, O43423, P26927, A8MVZ5
+
+**import files**
+```{r}
+#read in files; https://genome.ucsc.edu/cgi-bin/hgTables?hgsid=2394924803_radhHFoQsyHmlu3NudAaGh9y6ehH&clade=mammal&org=Human&db=hg38&hgta_group=map&hgta_track=gold&hgta_table=0&hgta_regionType=genome&position=chr7%3A155%2C799%2C529-155%2C812%2C871&hgta_outputType=primaryTable&hgta_outFileName=genome_browser
+uniprot_ensg <- fread("~/from_uniprot_to_ensg", header=TRUE)
+locations <- fread("~/gencode.v47.basic.annotation.gtf.gz", skip=5, header=FALSE)
+```
+
+**merge location with protein IDs**
+```{r}
+#make new column of ensg numbers without versions
+uniprot_ensg_ensg$To <- sub("\\..*", "", uniprot_ensg$To)
+locations$V10 <- substr(locations$V9, 10, 24)
+
+#merge files by ensembl id
+ensg_location <- left_join(uniprot_ensg, locations, by=c("To"="V10"))
+
+#select and rename columns
+protein_locations <- ensg_location %>% select("From", "To", "V1", "V4", "V5")
+colnames(protein_locations) <- c("protein", "EnsembleID", "chr", "left", "right")
+```
+
+**format data table**
+```{r}
+#keep only the largest transcript for protein
+protein_loc_clean <- protein_loc_clean %>%
+  mutate(transcript_length = pmax(left, right) - pmin(left, right))
+
+protein_loc_cleaner <- protein_loc_clean %>%
+  group_by(protein) %>%
+  slice(which.max(transcript_length)) %>%
+  ungroup()
+
+#sort rows by chromosome and position
+protein_loc_cleaner$chr_num <- as.numeric(gsub("chr", "", protein_loc_cleaner$chr))
+protein_loc_cleaner <- protein_loc_cleaner[order(protein_loc_cleaner$chr_num, protein_loc_cleaner$left), ]
+protein_loc_cleaner$chr_num <- NULL
+
+#save file
+write.table(protein_loc_cleaner, "~/proteins_w_locations", quote=FALSE, col.names = TRUE, row.names = FALSE, sep="\t") #2860 proteins remaining
+```
+
+**format by chromosome**
+```{r}
+#extract columns needed
+pqtl_file<- protein_loc_cleaner %>% select("protein", "chr", "left", "right")
+
+#save all location file
+write.table(pqtl_file, "~/protein_locations/all_protein_location_file", quote=FALSE, col.names = TRUE, row.names = FALSE, sep="\t")
+
+#rename column headers
+colnames(pqtl_file) <- c("OlinkID", "chr", "left", "right")
+
+#loop through chromosomes chr1 to chr22
+chromosomes <- paste0("chr", 1:23)
+
+for (chr in chromosomes) {
+  chr_data <- pqtl_file[pqtl_file$chr == chr, ] #subset the data for the current chromosome
+  if (nrow(chr_data) == 0) { #skip if no data for the chromosome
+    next
+  }
+  file_name <- file.path("~/protein_locations/", paste0(chr, "_protein_location_file")) #create a file name
+  #save the table
+  write.table(chr_data, file = file_name, sep = "\t", col.names=TRUE, row.names = FALSE, quote = FALSE)
+}
+```
+
+**save a final combined chromosome location file**
+```{bash}
+#retrieve the header line
+head -n 1 ~/protein_locations/chr1_protein_location_file > ~/protein_locations/allchr_protein_location_file
+
+#append the data from all files
+for chr in {1..23}; do
+  tail -n +2 ~/protein_locations/chr${chr}_protein_location_file >> ~/protein_locations/allchr_protein_location_file
+done
+
+#Unmapped proteins that were able to be located within the Ensemble database were added to the final protein location file
+
+#OID21327	chr3	159988835	159996019 and OID21327.1	chr5	159314780	159330863 used in final file to account for the two protein coding regions of the protein, resulting in 2899 protein locations in the final file with 2898 unique protein IDs
+
+```

@@ -1,0 +1,217 @@
+---
+title: "Covariate Adjustment"
+author: "Claudia Krueger"
+date: "2024-12-15"
+output: html_document
+---
+Prepare covariate files
+
+**input tables**
+```{r}
+#read in protein expression matrix
+olink <- fread("~/ancestry_specific_folder/post_qc_merge_olink.txt", header = TRUE)
+
+#read in filtered demographic data
+demographic <- fread("~/ancestry_specific_folder/protein_sidno_data", header = TRUE)
+
+#read in genotype eigenvector matrix
+pcs <- fread("~/ancestry_specific_folder/pca.eigenvec")
+```
+
+**format demographic data and extract necessary columns**
+```{r}
+#arrange demographic data by SMP ID number
+ordered_demographic <- demographic %>% 
+  mutate(ID_num = as.numeric(sub("SMP_", "", SampleID))) %>%  #extract numeric part
+  arrange(ID_num) %>%  #arrange by the numeric part
+  select(-ID_num)  #remove the temporary column
+
+#extract sidno and smp columns
+sidno_smp <- ordered_demographic[, c("SampleID", "sidno")]
+sidno <- sidno_smp$sidno
+
+#extract fid and smp columns
+fid_smp <- demographic[, c("FID", "SampleID")]
+
+#filter eigenvec file to keep only people/samples that are in the ancestry-specific filtered samples and order rows numerically
+pcs_w_smps <- inner_join(pcs, fid_smp, by=c("FID"))
+filtered_pcs <- pcs_w_smps %>% 
+  select(SampleID, PC1, PC2, PC3, PC4, PC5, PC6, PC7, PC8, PC9, PC10)%>%
+  mutate(ID_num = as.numeric(sub("SMP_", "", SampleID))) %>%  #extract numeric part
+  arrange(ID_num) %>%  #arrange by the numeric part
+  select(-ID_num)  #remove the temporary column
+
+#merge genotype pcs and selected covariates into one table
+all_covariates <- left_join(filtered_pcs, ordered_demographic, by=c("SampleID"))
+
+#extract desired columns
+selected_covariates <-  all_covariates %>% select(SampleID, PC1, PC2, PC3, PC4, PC5, PC6, PC7, PC8, PC9, PC10, race1c.x, gender1, AGE_AT_COLLECTION)
+
+#remove columns with NA values
+covariates_no_na <- na.omit(selected_covariates)
+```
+
+**use only proteins with matching sample IDs in demographic data**
+```{r}
+#identify the common SampleIDs
+common_sample_ids <- intersect(covariates_no_na$SampleID, olink$SampleID)
+
+#filter both tables to keep only rows with common SampleIDs
+filtered_covariates <- covariates_no_na %>%
+  filter(SampleID %in% common_sample_ids)
+
+filtered_olink <- as.data.frame(olink) %>%
+  filter(SampleID %in% common_sample_ids)
+
+filtered_sidno <- sidno_smp %>%
+  filter(SampleID %in% common_sample_ids)
+
+filtered_pcs <- filtered_pcs %>%
+  filter(SampleID %in% common_sample_ids)
+```
+
+**save new files**
+```{r}
+write.table(filtered_pcs, "~/ancestry_specific_folder/protein_adj_pca.eigenvec", quote=FALSE, sep="\t", row.names = FALSE, col.names =TRUE)
+write.table(filtered_olink[,-1], "~/ancestry_specific_folder/covar_filtered_olink", quote=FALSE, sep="\t", row.names = FALSE, col.names =TRUE)
+write.table(filtered_covariates[,-1], "~/ancestry_specific_folder/na_filtered_covariates", quote=FALSE, sep="\t", row.names = FALSE, col.names =TRUE)
+write.table(filtered_sidno[,-1], "~/ancestry_specific_folder/covar_filtered_sidno", quote=FALSE, sep="\t", row.names = FALSE, col.names =TRUE)
+```
+
+**input files or use above variables**
+```{r}
+covariates <- fread("~/ancestry_specific_folder/na_filtered_covariates")
+olink <- fread("~/ancestry_specific_folder/covar_filtered_olink")
+sidno <- fread("~/ancestry_specific_folder/covar_filtered_sidno")
+smp_lables <- fread("~/ancestry_specific_folder/protein_adj_pca.eigenvec")
+smps <- smp_lables[,1]
+```
+
+**convert data types**
+```{r}
+#make variables factors
+covariates$gender1 <- as.factor(covariates$gender1)
+covariates$race1c.x <- as.factor(covariates$race1c.x)
+covariates$COLLECTION_YEAR <- as.factor(covariates$COLLECTION_YEAR)
+covariates$AGE_AT_COLLECTION <- as.factor(covariates$AGE_AT_COLLECTION)
+sidno$sidno <- as.factor(sidno$sidno)
+sidno <- sidno$sidno
+
+#convert to data frame
+olink <- as.data.frame(olink)
+```
+
+**perform covariate adjustment with linear mixed modeling (lmer/ranefmat) and linear modeling (lm/residmat)**
+```{r}
+#generate matrix
+ranefmat <- matrix(NA, nrow = length(unique(sidno)), ncol = dim(olink)[2])
+residmat <- matrix(NA,nrow=dim(olink)[1],ncol=dim(olink)[2])
+
+#perform lmer
+for(i in 1:dim(olink)[2]){
+  fit <- lmer(olink[,i] ~ (1|sidno) + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10 + gender1 + COLLECTION_YEAR + AGE_AT_COLLECTION, data = covariates, control = lmerControl(check.conv.singular = "ignore"))
+  fitranef <- ranef(fit)
+  fitresid <- resid(fit)
+  ranefmat[,i] <- fitranef$sidno[,1]
+  residmat[,i] <- fitresid
+}
+
+#label rows and columns of ranefmat
+colnames(ranefmat) <-colnames(olink)
+rownames(ranefmat) <- rownames(fitranef$sidno)
+ranefmat <- data.frame(SampleID = rownames(ranefmat), ranefmat)
+ranefmat$SampleID <- as.numeric(ranefmat$SampleID)
+
+#label rows and columns of residmat
+rownames(residmat) <- smps$SampleID
+colnames(residmat) <- colnames(olink)
+residmat <- data.frame(SampleID = rownames(residmat), residmat)
+
+#read in table with sidno ids and corresponding fids
+fids <- fread("~/ancestry_specific_folder/protein_sidno_data", header=TRUE)
+
+#select columns
+filtered_fids <- fids[ ,c("FID", "sidno")]
+
+#merge by sidno
+fids_w_ranefmat <- left_join(ranefmat, filtered_fids, by=c("SampleID" = "sidno"))
+
+#move the last column to the first
+fids_w_ranefmat <- fids_w_ranefmat %>%
+  select(last_col(), everything())
+
+#remove sidno column
+fids_w_ranefmat <- fids_w_ranefmat[, -2]
+
+#keep only unique rows
+fids_w_ranefmat <- fids_w_ranefmat %>%
+  distinct()
+
+#save final files
+write.table(fids_w_ranefmat, "~/ancestry_specific_folder/ranefmat", row.names=FALSE, col.names=TRUE, sep="\t", quote=FALSE)
+write.table(residmat, "~/ancestry_specific_folder/residmat", row.names=FALSE, col.names=TRUE, sep="\t", quote=FALSE)
+```
+
+**edit final linear model table**
+```{r}
+olink_matrix <- fread("~/ancestry_specific_folder/post_qc_merge_olink.txt", header = TRUE)
+residmat <- read.table("~/ancestry_specific_folder/residmat", header=TRUE)
+demographic <- fread("~/ancestry_specific_folder/protein_sidno_data", header = TRUE)
+
+#filter original Olink matrix and demographic data
+filtered_olink <- olink_matrix %>%
+  filter(olink_matrix$SampleID %in% (residmat$SampleID))
+
+filtered_demographic <- demographic %>%
+  filter(demographic$SampleID %in% (residmat$SampleID))
+
+#isolate ID columns
+fid_sidno_snp <- select(filtered_demographic, "FID", "sidno", "SampleID")
+
+#add sidno ids based on corresponding smp
+residmat_sidno <- left_join(fid_sidno_snp, residmat, by=c("SampleID"))
+residmat_fid <- residmat_sidno[, -c(2, 3)]
+
+olink_sidno <- left_join(fid_sidno_snp, filtered_olink, by=c("SampleID"))
+olink_fid <- olink_sidno[, -c(2, 3)]
+
+#average the OID expression levels by protein and person
+averaged_residmat <- residmat_fid %>%
+  group_by(FID) %>%
+  summarise(across(starts_with("OID"), mean))
+
+averaged_olink <- olink_fid %>%
+  group_by(FID) %>%
+  summarise(across(starts_with("OID"), mean))
+
+#take out proteins not included in analysis
+rows_to_remove <- c("NWD117521", "NWD124541", "NWD159446", "NWD392992", "NWD462959", "NWD523161", "NWD677387", "NWD681170", "NWD857221", "NWD996654")
+cols_to_remove <- c("OID30376", "OID31431")
+
+filtered_avg_olink <- averaged_olink[!averaged_olink$FID %in% rows_to_remove, ]
+filtered_avg_olink <- filtered_avg_olink[, !colnames(filtered_avg_olink) %in% cols_to_remove]
+filtered_avg_residmat <- averaged_residmat[!averaged_residmat$FID %in% rows_to_remove, ]
+filtered_avg_residmat <- filtered_avg_residmat[, !colnames(filtered_avg_residmat) %in% cols_to_remove]
+
+#subtract residuals
+adjusted_matrix <- filtered_avg_olink[, -1] - filtered_avg_residmat[, -1]
+adjusted_matrix <- cbind(filtered_avg_olink[, 1], adjusted_matrix)
+
+#transpose table and assign column and row headers
+adjusted_residmat <- t(adjusted_matrix[, -1])
+adjusted_residmat <- as.data.table(adjusted_residmat)
+colnames(adjusted_residmat) <- adjusted_matrix[,1]
+oids<- colnames(adjusted_matrix)[-1]
+oids <- as.data.table(oids)
+final_residmat <- cbind(oids$oids, adjusted_residmat)
+colnames(final_residmat)[1] <- "oids"
+
+#write out
+write.table(final_residmat, "~/ancestry_specific_folder/residmat_table", row.names=FALSE, col.names=TRUE, sep="\t", quote=FALSE)
+
+#pre and post lm
+#get residuals average, this is the final value compare with random effects 
+#plot random effect value vs average residual value (correlation for each protein)
+#people v protein pre and post adjustment
+```
+

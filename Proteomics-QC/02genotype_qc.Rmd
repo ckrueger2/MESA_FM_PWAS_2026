@@ -1,0 +1,201 @@
+---
+title: "Genotype Quality Control"
+author: "Claudia Krueger"
+date: "2024-12-15"
+output: html_document
+---
+
+QC performed for autosomal chromosomes and X chromosome separately (missingness only for X chr)
+QC performed for all ancestries population (pre-QC and missingness only, separate ancestral populations merged after qc to form final all ancestries population), European ancestral population (euro_amer), African ancestral population (afr_amer), Asian ancestral population (chn_amer), and Hispanic ancestral population (hisp_amer)
+
+**pre-quality control**
+geno filter: filters SNPs based on the proportion of missing genotypes, so in this case SNPs that are present in 80% of the population or more are kept
+```{bash}
+#chromosome file in bed/bim/bed format
+plink --bfile ~/ancestry_specific_folder/chromsome_file --geno 0.2 --make-bed --out ~/ancestry_specific_folder/pre_filter_geno
+
+plink --bfile ~/ancestry_specific_folder/x_chromsome_file --geno 0.2 --make-bed --out ~/xchrom/ancestry_specific_folder/pre_filter_geno
+```
+
+mind filter: filters people based on the proportion of missing phenotype
+```{bash}
+plink --bfile ~/ancestry_specific_folder/pre_filter_geno --mind 0.2 --make-bed --out ~/ancestry_specific_folder/mind_pre_qc
+
+plink --bfile ~/ancestry_specific_folder/pre_filter_geno --mind 0.2 --make-bed --out ~/xchrom/ancestry_specific_folder/mind_pre_qc
+```
+
+genome filter: chrX, chrY, and chrM are excluded #only performed for autosomal QC
+mendel filter: haploid and mitochondrial data #none detected in dataset
+```{bash}
+#for autosome chromsomes only
+plink --bfile ~/ancestry_specific_folder/mind_pre_qc --genome --mendel --out ~/ancestry_specific_folder/pre_filter
+```
+
+check sex filter: compares sex assignments in dataset with X chromosome inbreeding coefficients #only performed for X chr QC
+```{bash}
+#for X chromosome only
+plink --bfile ~/ancestry_specific_folder/mind_pre_qc --check-sex --out ~/xchrom/ancestry_specific_folder/pre_filter
+```
+
+**missingness**
+parameters: geno 0.02 maf 0.01, HWE 1e-6
+```{bash}
+#--autosome flag not used in X chromosome QC
+~/gwasqc_pipeline/shellscripts/01MissingnessFiltering --bfile ~/ancestry_specific_folder/pre_filter --autosome --geno 0.02 --maf 0.01 -o ~/ancestry_specific_folder
+
+~/gwasqc_pipeline/shellscripts/01MissingnessFiltering --bfile ~/ancestry_specific_folder/pre_filter --geno 0.02 --maf 0.01 -o ~/xchrom/ancestry_specific_folder
+```
+
+**relatedness**
+parameters: maf 0.01, ref 0.125, independent pairwise 500 50 0.2
+```{bash}
+#LD pruning occurs in this step
+#replace ancestry in shell script name with ancestry to be used
+~/gwasqc_pipeline/shellscripts/02.5LDancestry_RelatednessFiltering --bfile ~/ancestry_specific_folder/missingness_hwe_steps/05filtered_HWE --rel 0.125 --out ~/ancestry_specific_folder
+```
+
+**filter out outliers if they exist in ~/ancestry_specific_folder/plot_stats/Hetoutliersno_relateds.txt**
+```{bash}
+#not used in this analysis
+plink --bfile ~/ancestry_specific_folder/relatedness_steps/05without_relateds --remove ~/ancestry_specific_folder/plot_stats/Hetoutliersno_relateds.txt --out ~/ancestry_specific_folder/relatedness_steps/07no_outliers_without_relateds
+```
+
+**make new bed/bim/bed files with missingness filtered SNPs and relatedness filtered individuals**
+```{bash}
+#make new files for separate ancestral populations
+#keep file is 07no_outliers_without_relateds if outliers are removed
+#not used in this analysis
+plink --bfile ~/ancestry_specific_folder/missingness_hwe_steps/05filtered_HWE --keep ~/ancestry_specific_folder/relatedness_steps/05without_relateds.fam --make-bed --out ~/ancestry_specific_folder/relatedness_steps/08missingness_relateds
+
+#merge new files to make an all ancestry population
+#relatednessmerge.txt contains merged .fam file of 3/4 ancestral populations (afr_amer, chn_amer, hisp_amer in this case)
+#use bfile of ancestral population not included in relatednessmerge.txt (euro_amer in this case)
+plink --bfile ~/euro_amer/relatedness_steps/08missingness_relateds --merge-list ~/relatednessmerge.txt --make-bed --out ~/all_ancestry_folder/merged_ancestry
+```
+
+**hapmap**
+Hapmap is performed to prepare files for PCA analysis
+All ancestry population is LD pruned in this step as LD pruning is necessary post-merging, separate ancestral populations are not LD pruned as they were pruned in relatedness steps and no outliers were filtered out
+
+geno filter: 0.01
+maf filter: 0.01
+independent pairwise: 200 1 0.3
+
+separate ancestral populations
+```{bash}
+#geno and maf filter
+plink--bfile ~/ancestry_specific_folder/relatedness_steps/05without_relateds --geno 0.01 --maf 0.01 --make-bed --out ~/ancestry_specific_folder/hapmap/01geno_maf_filter
+
+#remove HLA and other high LD regions
+plink --bfile ~/ancestry_specific_folder/hapmap/01geno_maf_filter --make-set /home/wheelerlab3/2023-08-14_METS_genotype_QC/high-ld-hg38.txt --write-set --out ~/ancestry_specific_folder/hapmap/02high_ld
+
+plink --bfile ~/ancestry_specific_folder/hapmap/01geno_maf_filter --exclude ~/ancestry_specific_folder/hapmap/02high_ld.set --make-bed ~/ancestry_specific_folder/hapmap/05final_LDpruned
+```
+
+all ancestry population
+```{bash}
+#geno and maf filter
+plink --bfile ~/all_ancestry_folder/merged_ancestry --geno 0.01 --maf 0.01 --make-bed --out ~/all_ancestry_folder/hapmap/01geno_maf_filter
+
+#remove HLA and other high LD regions
+plink --bfile ~/all_ancestry_folder/hapmap/01geno_maf_filter --make-set /home/wheelerlab3/2023-08-14_METS_genotype_QC/high-ld-hg38.txt --write-set --out ~/all_ancestry_folder/hapmap/02high_ld
+plink --bfile ~/all_ancestry_folder/hapmap/01geno_maf_filter --exclude ~/all_ancestry_folder/hapmap/02high_ld.set --make-bed --out ~/all_ancestry_folder/hapmap/03no_high_ld_merge
+
+#LD prune
+plink --bfile ~/all_ancestry_folder/hapmap/03no_high_ld_merge --indep-pairwise 200 1 0.3 --out ~/all_ancestry_folder/hapmap/04LD_prune_list
+
+plink --bfile ~/all_ancestry_folder/hapmap/03no_high_ld_merge --extract ~/all_ancestry_folder/hapmap/04LD_prune_list.prune.in --make-bed --out plink --bfile ~/all_ancestry_folder/hapmap/05final_LDpruned
+```
+
+**PC-AiR**
+https://bioconductor.org/packages/devel/bioc/vignettes/GENESIS/inst/doc/pcair.html 
+
+Perform for all ancestry population
+
+PC-AiR plotting and outgroup detection
+```{bash}
+~/gwasqc_pipeline/shellscripts/04PCAiR.sh --BfileDir ~/all_ancestry_folder/hapmap --out ~/all_ancestry_folder
+```
+
+Filter outgroup of PC4 from PC-AiR plot
+```{bash}
+#removes 165 people
+plink --bfile ~/all_ancestry_folder/hapmap/05final_LDpruned --remove ~/all_ancestry_folder/pcair_outgroup.txt --make-bed --out ~/all_ancestry_folder/post_outgroup_filter/05final_LDpruned
+```
+
+Filter all ancestry outgroup from separate ancestral populations
+```{r}
+library(data.table)
+library(dplyr)
+
+#read in european american .fam file
+euro_amer_fam <- read.table("~/euro_amer/relatedness_steps/05without_relateds.fam", header=F)
+colnames(euro_amer_fam) <- c("FID", "IID", "PAT", "MAT", "SEX", "PHENOTYPE")
+
+#read in african american .fam file
+afr_amer_fam <- read.table("~/afr_amer/relatedness_steps/05without_relateds.fam", header=F)
+colnames(afr_amer_fam) <- c("FID", "IID", "PAT", "MAT", "SEX", "PHENOTYPE")
+
+#read in chinese american .fam file
+chn_amer_fam <- read.table("~/chn_amer/relatedness_steps/05without_relateds.fam", header=F)
+colnames(chn_amer_fam) <- c("FID", "IID", "PAT", "MAT", "SEX", "PHENOTYPE")
+
+#read in hispanic american .fam file
+hisp_amer_fam <- read.table("~/hisp_amer/relatedness_steps/05without_relateds.fam", header=F)
+colnames(hisp_amer_fam) <- c("FID", "IID", "PAT", "MAT", "SEX", "PHENOTYPE")
+
+#read in outgroup list file
+all_ancestry_outgroup <- read.table("~/all_ancestry_folder/post_outgroup_filter/pcair_outgroup.txt", header=F)
+colnames(all_race_outgroup) <- c("FID", "IID")
+
+#Filter out IDs of each ancestry
+all_ancestry_ids <- (all_ancestry_outgroup$FID)
+euro_amer_ids <- (euro_amer_fam$FID)
+afr_amer_ids <- (afr_amer_fam$FID)
+chn_amer_ids <- (chn_amer_fam$FID)
+hisp_amer_ids <- (hisp_amer_fam$FID)
+
+#Find common IDs between the all race outgroup and each ancestry
+common_with_euro <- intersect(all_ancestry_ids, euro_amer_ids)
+common_with_afr <- intersect(all_ancestry_ids, afr_amer_ids)
+common_with_chn <- intersect(all_ancestry_ids, chn_amer_ids)
+common_with_hisp <- intersect(all_ancestry_ids, hisp_amer_ids)
+
+#Remove common IDs
+uncommon_with_euro <- euro_amer_ids[!euro_amer_ids %in% common_with_euro]
+uncommon_with_afr <- afr_amer_ids[!afr_amer_ids %in% common_with_afr]
+uncommon_with_chn <- chn_amer_ids[!chn_amer_ids %in% common_with_chn]
+uncommon_with_hisp <- hisp_amer_ids[!hisp_amer_ids %in% common_with_hisp]
+
+#Make new data.frames
+uncommon_with_euro_df <- data.frame(FID = uncommon_with_euro)
+uncommon_with_afr_df <- data.frame(FID = uncommon_with_afr)
+uncommon_with_chn_df <- data.frame(FID = uncommon_with_chn)
+uncommon_with_hisp_df <- data.frame(FID = uncommon_with_hisp)
+
+#Make files readable by plink
+new_uncommon_with_euro <- uncommon_with_euro_df %>%
+  mutate(IID = FID)
+new_uncommon_with_afr <- uncommon_with_afr_df %>%
+  mutate(IID = FID)
+new_uncommon_with_chn <- uncommon_with_chn_df %>%
+  mutate(IID = FID)
+new_uncommon_with_hisp <- uncommon_with_hisp_df %>%
+  mutate(IID = FID)
+
+# Write the common IDs to separate text files
+write.table(new_uncommon_with_euro, "~/euro_amer/new_plink_files/no_outgroup.txt", quote = FALSE, row.names = FALSE, col.names = FALSE)
+write.table(new_uncommon_with_afr, "~/afr_amer/new_plink_files/no_outgroup.txt", quote = FALSE, row.names = FALSE, col.names = FALSE)
+write.table(new_uncommon_with_chn, "~/chn_amer/new_plink_files/no_outgroup.txt", quote = FALSE, row.names = FALSE, col.names = FALSE)
+write.table(new_uncommon_with_hisp, "~/hisp_amer/new_plink_files/no_outgroup.txt", quote = FALSE, row.names = FALSE, col.names = FALSE)
+```
+
+**make final plink files**
+```{bash}
+#autosomal chromosomes
+plink --bfile ~/ancestry_specific_folder/missingness_hwe_steps/05filtered_HWE --keep ~/ancestry_specific_folder/new_plink_files/no_outgroup.txt --make-bed ~/ancestry_specific_folder/new_plink_files/final_qc
+
+#x chromosome
+plink --bfile ~/xchrom/ancestry_specific_folder/missingness_hwe_steps/05filtered_HWE --keep ~/ancestry_specific_folder/new_plink_files/no_outgroup.txt --make-bed ~/xchrom/ancestry_specific_folder/new_plink_files/final_qc
+```
+

@@ -1,0 +1,61 @@
+---
+title: "Plink File Formatting"
+author: "Claudia Krueger"
+date: "2024-12-15"
+output: html_document
+---
+
+Autosomal chromosomes merged into one file to be used in downstream analysis
+Merged autosomal chromosome file and X chromosones file split by ancestry for use in downstream analysis
+
+**create VCF zip files from BCF files**
+```{bash}
+#iterate through chromosome 1 to 22
+for i in $(seq 1 22)
+do
+    bcftools view -i 'MAF>0.0001' /home/wheelerlab3/Data/TOPMed/2024-07-29_TOPMed_MESA_WGS/freeze.10b/mesa.subset/minDP10/mesa.freeze.10b.chr$i.pass_and_fail.gtonly.minDP10.bcf -Oz -o ~/mesa.freeze.10b.chr$i.pass_and_fail.gtonly.minDP10.vcf.gz
+done 
+
+#X chromosome
+bcftools view -i 'MAF>0.0001' /home/wheelerlab3/Data/TOPMed/2024-07-29_TOPMed_MESA_WGS/freeze.10b/mesa.subset/minDP10/mesa.freeze.10b.chrX.pass_and_fail.gtonly.minDP10.bcf -Oz -o ~/mesa.freeze.10b.chrX.pass_and_fail.gtonly.minDP10.vcf.gz
+```
+
+**convert VCF files of all chromosomes into bed/bim/fam files**
+--keep-tag: specifys a subset of individual with proteomic data to keep when converting from vcf to bed/bim/fam
+```{bash}
+#iterate through chromosome 1 to 22
+for i in $(seq 1 22)
+do
+    plink --vcf ~/mesa.freeze.10b.chr$i.pass_and_fail.gtonly.minDP10.vcf.gz --make-bed --keep ~/famfile_MESA_hasproteomic.txt --out ~/mesa.freeze.10b.chr$i.pass_and_fail.gtonly.minDP10
+done
+
+#X chromosome
+plink --vcf ~/mesa.freeze.10b.chrX.pass_and_fail.gtonly.minDP10.vcf.gz --make-bed --keep ~/famfile_MESA_hasproteomic.txt --out ~/mesa.freeze.10b.chrX.pass_and_fail.gtonly.minDP10
+```
+
+**remove chr from IDs, then merge all chromosomes**
+```{bash}
+#iterate through 1-22 chromosomes, remove chr
+for i in $(seq 1 22)
+do
+   plink2 --bfile ~/mesa.freeze.10b.chr$i.pass_and_fail.gtonly.minDP10 --set-all-var-ids 'chr'@:#:\$r:\$a --snps-only just-acgt --make-bed --out ~/mesa.freeze.10b.chr$i.pass_and_fail.gtonly.minDP10
+done
+
+#create a merge list with all the chromosome files except the first chromosome
+for i in $(seq 2 22)
+do
+    echo ~/mesa.freeze.10b.chr$i.pass_and_fail.gtonly.minDP10 >> ~/merge_list.txt
+done
+
+#merge the list with the first chromosome using plink
+plink --bfile ~/mesa.freeze.10b.chr1.pass_and_fail.gtonly.minDP10 --merge-list ~/merge_list.txt --make-bed --out ~/mesa.freeze.10b.chr1-22.pass_and_fail.gtonly.minDP10 
+```
+
+**make split ancestral population file**
+```{bash}
+#autosomal chromosomes
+plink --bfile ~/mesa.freeze.10b.chr1-22.pass_and_fail.gtonly.minDP10 --keep ~/ancestry_file.txt --make-bed --out ~/ancestry_specific_folder/chromosome_file
+
+#X chromosome
+plink --bfile ~/mesa.freeze.10b.chrX.pass_and_fail.gtonly.minDP10 --keep ~/ancestry_file.txt --make-bed --out ~/ancestry_specific_folder/x_chromsome_file
+```
