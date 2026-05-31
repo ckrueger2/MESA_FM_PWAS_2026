@@ -1,0 +1,713 @@
+---
+title: "Statitical Tests"
+author: "Claudia Krueger"
+date: "2025-07-31"
+output: html_document
+---
+
+**pGene and pSNP Linear Regression**
+```{r}
+#tensorQTL
+data <- data.frame(
+  population = c("AFR", "CHN", "EUR", "HIS", "ALL"),
+  pop_size = c(675, 366, 1270, 642, 2953),
+  cis_count = c(795, 568, 1008, 705, 1279),
+  trans_count = c(673, 954, 653, 781, 586)
+)
+
+#pSNP
+data2 <- data.frame(
+  population = c("AFR", "CHN", "EUR", "HIS", "ALL"),
+  pop_size = c(675, 366, 1270, 642, 2953),
+  cis_count = c(208536, 136757, 433556, 243137, 514717),
+  trans_count = c(16673, 50226, 33117, 32819, 42543)
+)
+
+#linear regression: cis gene count vs population size
+cis_model <- lm(cis_count ~ pop_size, data = data2)
+cis_summary <- summary(cis_model)
+
+#linear regression: trans gene count vs population size  
+trans_model <- lm(trans_count ~ pop_size, data = data2)
+trans_summary <- summary(trans_model)
+
+#results
+cat("CIS GENES vs POPULATION SIZE:\n")
+cat("Slope:", cis_model$coefficients[2], "\n")
+cat("R-squared:", cis_summary$r.squared, "\n")
+cat("P-value:", cis_summary$coefficients[2,4], "\n\n")
+
+cat("TRANS GENES vs POPULATION SIZE:\n")
+cat("Slope:", trans_model$coefficients[2], "\n") 
+cat("R-squared:", trans_summary$r.squared, "\n")
+cat("P-value:", trans_summary$coefficients[2,4], "\n")
+```
+
+**Credible Sets per Protein**
+```{r}
+#load data
+cis_all  <- fread("~/tensor_susie/all_race/0.05cis_finemap.tsv", header = TRUE)
+cis_euro <- fread("~/tensor_susie/euro_amer/0.05cis_finemap.tsv", header = TRUE)
+cis_afr  <- fread("~/tensor_susie/afr_amer/0.05cis_finemap.tsv", header = TRUE)
+cis_hisp <- fread("~/tensor_susie/hisp_amer/0.05cis_finemap.tsv", header = TRUE)
+cis_chn  <- fread("~/tensor_susie/chn_amer/0.05cis_finemap.tsv", header = TRUE)
+
+trans_all  <- fread("~/tensor_susie/all_race/0.05trans_finemap_edited.tsv", header = TRUE)
+trans_euro <- fread("~/tensor_susie/euro_amer/0.05trans_finemap_edited.tsv", header = TRUE)
+trans_afr  <- fread("~/tensor_susie/afr_amer/0.05trans_finemap_edited.tsv", header = TRUE)
+trans_hisp <- fread("~/tensor_susie/hisp_amer/0.05trans_finemap_edited.tsv", header = TRUE)
+trans_chn  <- fread("~/tensor_susie/chn_amer/0.05trans_finemap_edited.tsv", header = TRUE)
+
+#data processing
+process_data <- function(data, pop_name) {
+  data %>%
+    distinct(gene_id, cs_label, .keep_all = TRUE) %>%
+    group_by(gene_id) %>%
+    summarise(cs_count = n(), .groups = "drop") %>%
+    mutate(population = pop_name)
+}
+
+cis_combined <- rbind(
+  process_data(cis_all,  "ALL"),
+  process_data(cis_euro, "EUR"),
+  process_data(cis_afr,  "AFR"),
+  process_data(cis_hisp, "HIS"),
+  process_data(cis_chn,  "CHN")
+)
+
+trans_combined <- rbind(
+  process_data(trans_all,  "ALL"),
+  process_data(trans_euro, "EUR"),
+  process_data(trans_afr,  "AFR"),
+  process_data(trans_hisp, "HIS"),
+  process_data(trans_chn,  "CHN")
+)
+
+#set population as factor
+pop_order <- c("ALL", "EUR", "AFR", "HIS", "CHN")
+cis_combined$population   <- factor(cis_combined$population,   levels = pop_order)
+trans_combined$population <- factor(trans_combined$population, levels = pop_order)
+
+#counts
+sample_sizes <- data.frame(
+  population = c("ALL", "EUR", "AFR", "HIS", "CHN"),
+  pop_size   = c(2953, 1270, 675, 642, 366)
+)
+
+#total CS counts per population
+cis_totals <- cis_combined %>%
+  group_by(population) %>%
+  summarise(total_cs = sum(cs_count), .groups = "drop")
+trans_totals <- trans_combined %>%
+  group_by(population) %>%
+  summarise(total_cs = sum(cs_count), .groups = "drop")
+cis_cor_data   <- left_join(sample_sizes, cis_totals,   by = "population")
+trans_cor_data <- left_join(sample_sizes, trans_totals, by = "population")
+fmt_p <- function(p) {
+  ifelse(p < 0.001, formatC(p, format = "e", digits = 2), round(p, 4))
+}
+
+#statistics
+desc_cis <- cis_combined %>%
+  group_by(population) %>%
+  summarise(
+    N_proteins     = n(),
+    Mean_CS        = round(mean(cs_count), 2),
+    Median_CS      = round(median(cs_count), 1),
+    SD_CS          = round(sd(cs_count), 2),
+    Total_CS       = sum(cs_count),
+    .groups = "drop"
+  )
+
+desc_trans <- trans_combined %>%
+  group_by(population) %>%
+  summarise(
+    N_proteins     = n(),
+    Mean_CS        = round(mean(cs_count), 2),
+    Median_CS      = round(median(cs_count), 1),
+    SD_CS          = round(sd(cs_count), 2),
+    Total_CS       = sum(cs_count),
+    .groups = "drop"
+  )
+
+print(as.data.frame(desc_cis), row.names = FALSE)
+print(as.data.frame(desc_trans), row.names = FALSE)
+
+#kruskal wallis
+kw_cis   <- kruskal.test(cs_count ~ population, data = cis_combined)
+kw_trans <- kruskal.test(cs_count ~ population, data = trans_combined)
+
+overall_table <- data.frame(
+  QTL_type  = c("Cis", "Trans"),
+  Test      = "Kruskal-Wallis",
+  Statistic = round(c(kw_cis$statistic, kw_trans$statistic), 3),
+  df        = c(kw_cis$parameter, kw_trans$parameter),
+  P_value   = fmt_p(c(kw_cis$p.value, kw_trans$p.value)),
+  Significant = c(kw_cis$p.value < 0.05, kw_trans$p.value < 0.05)
+)
+
+print(overall_table, row.names = FALSE)
+
+#dunns post-hoc test
+dunn_cis   <- dunnTest(cs_count ~ population, data = cis_combined,   method = "bonferroni")$res
+dunn_trans <- dunnTest(cs_count ~ population, data = trans_combined, method = "bonferroni")$res
+format_dunn <- function(d, qtl_label) {
+  d %>%
+    transmute(
+      QTL_type   = qtl_label,
+      Comparison = Comparison,
+      Z          = round(Z, 3),
+      P_unadj    = fmt_p(P.unadj),
+      P_adj_Bonf = fmt_p(P.adj),
+      Significant = P.adj < 0.05
+    )
+}
+pairwise_table <- rbind(
+  format_dunn(dunn_cis,   "Cis"),
+  format_dunn(dunn_trans, "Trans")
+)
+print(as.data.frame(pairwise_table), row.names = FALSE)
+```
+
+**Credible Set Size by Ancestry**
+```{r}
+#load data
+load_data <- function(file_path, data_type, ancestry) {
+  tryCatch({
+    data <- fread(file_path, header = TRUE)
+    data$data_type <- data_type
+    data$ancestry  <- ancestry
+    return(data)
+  }, error = function(e) {
+    warning(paste("Error loading file:", file_path, "\nError:", e$message))
+    return(NULL)
+  })
+}
+
+trans_all  <- load_data("~/tensor_susie/all_race/0.05trans_finemap_edited.tsv",  "trans", "ALL")
+trans_euro <- load_data("~/tensor_susie/euro_amer/0.05trans_finemap_edited.tsv", "trans", "EUR")
+trans_afr  <- load_data("~/tensor_susie/afr_amer/0.05trans_finemap_edited.tsv",  "trans", "AFR")
+trans_hisp <- load_data("~/tensor_susie/hisp_amer/0.05trans_finemap_edited.tsv", "trans", "HIS")
+trans_chn  <- load_data("~/tensor_susie/chn_amer/0.05trans_finemap_edited.tsv",  "trans", "CHN")
+
+cis_all  <- load_data("~/tensor_susie/all_race/0.05cis_finemap.tsv",  "cis", "ALL")
+cis_euro <- load_data("~/tensor_susie/euro_amer/0.05cis_finemap.tsv", "cis", "EUR")
+cis_afr  <- load_data("~/tensor_susie/afr_amer/0.05cis_finemap.tsv",  "cis", "AFR")
+cis_hisp <- load_data("~/tensor_susie/hisp_amer/0.05cis_finemap.tsv", "cis", "HIS")
+cis_chn  <- load_data("~/tensor_susie/chn_amer/0.05cis_finemap.tsv",  "cis", "CHN")
+
+all_data <- rbindlist(list(
+  trans_all, trans_euro, trans_afr, trans_hisp, trans_chn,
+  cis_all, cis_euro, cis_afr, cis_hisp, cis_chn
+), fill = TRUE, use.names = TRUE)
+
+all_data$af <- NULL
+
+#build per-CS summary
+cs_size_data <- all_data %>%
+  group_by(ancestry, data_type, gene_id, cs_label) %>%
+  summarise(
+    cs_size = n(),
+    max_pip = max(pip, na.rm = TRUE),
+    avg_pip = mean(pip, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+ancestry_order <- c("ALL", "EUR", "AFR", "HIS", "CHN")
+cs_size_data$ancestry <- factor(cs_size_data$ancestry, levels = ancestry_order)
+
+cis_cs   <- cs_size_data %>% filter(data_type == "cis")
+trans_cs <- cs_size_data %>% filter(data_type == "trans")
+
+fmt_p <- function(p) {
+  ifelse(p < 0.001, formatC(p, format = "e", digits = 2), round(p, 4))
+}
+
+#statistics
+desc <- cs_size_data %>%
+  group_by(data_type, ancestry) %>%
+  summarise(
+    N_credible_sets = n(),
+    Mean_CS_size    = round(mean(cs_size),   2),
+    Median_CS_size  = round(median(cs_size), 1),
+    SD_CS_size      = round(sd(cs_size),     2),
+    Mean_max_PIP    = round(mean(max_pip),   3),
+    Median_max_PIP  = round(median(max_pip), 3),
+    .groups = "drop"
+  )
+print(as.data.frame(desc), row.names = FALSE)
+
+#Kruskal-Wallis tests
+kw_cis_size   <- kruskal.test(cs_size ~ ancestry, data = cis_cs)
+kw_trans_size <- kruskal.test(cs_size ~ ancestry, data = trans_cs)
+
+overall <- data.frame(
+  QTL_type  = c("Cis", "Trans"),
+  Outcome   = c("CS Size", "CS Size"),
+  Test      = "Kruskal-Wallis",
+  Statistic = round(c(kw_cis_size$statistic,
+                      kw_trans_size$statistic), 3),
+  df        = c(kw_cis_size$parameter,
+                kw_trans_size$parameter),
+  P_value   = fmt_p(c(kw_cis_size$p.value,
+                      kw_trans_size$p.value)),
+  Significant = c(kw_cis_size$p.value < 0.05,
+                  kw_trans_size$p.value < 0.05)
+)
+print(overall, row.names = FALSE)
+
+#dunns post-hoc test
+cis_cs$ancestry   <- as.character(cis_cs$ancestry)
+trans_cs$ancestry <- as.character(trans_cs$ancestry)
+
+dunn_cis_size   <- dunnTest(cs_size ~ ancestry, data = cis_cs,   method = "bonferroni")$res
+dunn_trans_size <- dunnTest(cs_size ~ ancestry, data = trans_cs, method = "bonferroni")$res
+
+format_dunn <- function(d, qtl, outcome) {
+  d %>%
+    transmute(
+      QTL_type   = qtl,
+      Outcome    = outcome,
+      Comparison = Comparison,
+      Z          = round(Z, 3),
+      P_unadj    = fmt_p(P.unadj),
+      Significant = P.adj < 0.05
+    )
+}
+pairwise <- rbind(
+  format_dunn(dunn_cis_size,   "Cis",   "CS Size"),
+  format_dunn(dunn_trans_size, "Trans", "CS Size")
+)
+print(as.data.frame(pairwise), row.names = FALSE)
+```
+
+**Maximum PIP/Protein**
+```{r}
+#load data
+load_data <- function(file_path, data_type, ancestry) {
+  tryCatch({
+    data <- fread(file_path, header = TRUE)
+    data$data_type <- data_type
+    data$ancestry  <- ancestry
+    return(data)
+  }, error = function(e) {
+    warning(paste("Error loading file:", file_path, "\nError:", e$message))
+    return(NULL)
+  })
+}
+
+trans_all  <- load_data("~/tensor_susie/all_race/0.05trans_finemap_edited.tsv",  "trans", "ALL")
+trans_euro <- load_data("~/tensor_susie/euro_amer/0.05trans_finemap_edited.tsv", "trans", "EUR")
+trans_afr  <- load_data("~/tensor_susie/afr_amer/0.05trans_finemap_edited.tsv",  "trans", "AFR")
+trans_hisp <- load_data("~/tensor_susie/hisp_amer/0.05trans_finemap_edited.tsv", "trans", "HIS")
+trans_chn  <- load_data("~/tensor_susie/chn_amer/0.05trans_finemap_edited.tsv",  "trans", "CHN")
+
+cis_all  <- load_data("~/tensor_susie/all_race/0.05cis_finemap_dedup.tsv",  "cis", "ALL")
+cis_euro <- load_data("~/tensor_susie/euro_amer/0.05cis_finemap_dedup.tsv", "cis", "EUR")
+cis_afr  <- load_data("~/tensor_susie/afr_amer/0.05cis_finemap_dedup.tsv",  "cis", "AFR")
+cis_hisp <- load_data("~/tensor_susie/hisp_amer/0.05cis_finemap_dedup.tsv", "cis", "HIS")
+cis_chn  <- load_data("~/tensor_susie/chn_amer/0.05cis_finemap_dedup.tsv",  "cis", "CHN")
+
+all_data <- rbindlist(list(
+  trans_all, trans_euro, trans_afr, trans_hisp, trans_chn,
+  cis_all, cis_euro, cis_afr, cis_hisp, cis_chn
+), fill = TRUE, use.names = TRUE)
+
+all_data$af <- NULL
+
+#build per credible set summary
+cs_size_data <- all_data %>%
+  group_by(ancestry, data_type, gene_id) %>%
+  summarise(
+    cs_size = n(),
+    max_pip = max(pip, na.rm = TRUE),
+    avg_pip = mean(pip, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+ancestry_order <- c("ALL", "EUR", "AFR", "HIS", "CHN")
+cs_size_data$ancestry <- factor(cs_size_data$ancestry, levels = ancestry_order)
+
+cis_cs   <- cs_size_data %>% filter(data_type == "cis")
+trans_cs <- cs_size_data %>% filter(data_type == "trans")
+
+fmt_p <- function(p) {
+  ifelse(p < 0.001, formatC(p, format = "e", digits = 2), round(p, 4))
+}
+
+#statistics
+desc <- cs_size_data %>%
+  group_by(data_type, ancestry) %>%
+  summarise(
+    N_credible_sets = n(),
+    Mean_CS_size    = round(mean(cs_size),   2),
+    Median_CS_size  = round(median(cs_size), 1),
+    SD_CS_size      = round(sd(cs_size),     2),
+    Mean_max_PIP    = round(mean(max_pip),   3),
+    Median_max_PIP  = round(median(max_pip), 3),
+    .groups = "drop"
+  )
+print(as.data.frame(desc), row.names = FALSE)
+
+#Kruskal-Wallis test
+kw_cis_pip    <- kruskal.test(max_pip ~ ancestry, data = cis_cs)
+kw_trans_pip  <- kruskal.test(max_pip ~ ancestry, data = trans_cs)
+
+overall <- data.frame(
+  QTL_type  = c("Cis", "Trans"),
+  Outcome   = c("Max PIP", "Max PIP"),
+  Test      = "Kruskal-Wallis",
+  Statistic = round(c(kw_cis_pip$statistic,
+                      kw_trans_pip$statistic), 3),
+  df        = c(kw_cis_pip$parameter,
+                kw_trans_pip$parameter),
+  P_value   = fmt_p(c(kw_cis_pip$p.value,
+                      kw_trans_pip$p.value)),
+  Significant = c(kw_cis_pip$p.value < 0.05,
+                  kw_trans_pip$p.value < 0.05)
+)
+print(overall, row.names = FALSE)
+
+#dunns post-hoc test
+cis_cs$ancestry   <- as.character(cis_cs$ancestry)
+trans_cs$ancestry <- as.character(trans_cs$ancestry)
+dunn_cis_pip    <- dunnTest(max_pip ~ ancestry, data = cis_cs,   method = "bonferroni")$res
+dunn_trans_pip  <- dunnTest(max_pip ~ ancestry, data = trans_cs, method = "bonferroni")$res
+
+format_dunn <- function(d, qtl, outcome) {
+  d %>%
+    transmute(
+      QTL_type   = qtl,
+      Outcome    = outcome,
+      Comparison = Comparison,
+      Z          = round(Z, 3),
+      P_unadj    = fmt_p(P.unadj),
+      Significant = P.unadj < 0.05
+    )
+}
+
+pairwise <- rbind(
+  format_dunn(dunn_cis_pip,    "Cis",   "Max PIP"),
+  format_dunn(dunn_trans_pip,  "Trans", "Max PIP")
+)
+print(as.data.frame(pairwise), row.names = FALSE)
+```
+
+**Probable Causal SNP Counts by Ancestry**
+```{r}
+#load data
+all_cis  <- fread("~/compare_susie/all_race/0.05cis_R_vs_tensor",  header = TRUE)
+euro_cis <- fread("~/compare_susie/euro_amer/0.05cis_R_vs_tensor", header = TRUE)
+afr_cis  <- fread("~/compare_susie/afr_amer/0.05cis_R_vs_tensor",  header = TRUE)
+chn_cis  <- fread("~/compare_susie/chn_amer/0.05cis_R_vs_tensor",  header = TRUE)
+hisp_cis <- fread("~/compare_susie/hisp_amer/0.05cis_R_vs_tensor", header = TRUE)
+
+all_trans  <- fread("~/compare_susie/all_race/0.05trans_R_vs_tensor",  header = TRUE)
+euro_trans <- fread("~/compare_susie/euro_amer/0.05trans_R_vs_tensor", header = TRUE)
+afr_trans  <- fread("~/compare_susie/afr_amer/0.05trans_R_vs_tensor",  header = TRUE)
+chn_trans  <- fread("~/compare_susie/chn_amer/0.05trans_R_vs_tensor",  header = TRUE)
+hisp_trans <- fread("~/compare_susie/hisp_amer/0.05trans_R_vs_tensor", header = TRUE)
+
+#extract tensorqtl columns
+all_tensor_cis  <- all_cis  %>% select(phenotype_id, SNP, tensor_CS, tensor_PIP)
+euro_tensor_cis <- euro_cis %>% select(phenotype_id, SNP, tensor_CS, tensor_PIP)
+afr_tensor_cis  <- afr_cis  %>% select(phenotype_id, SNP, tensor_CS, tensor_PIP)
+chn_tensor_cis  <- chn_cis  %>% select(phenotype_id, SNP, tensor_CS, tensor_PIP)
+hisp_tensor_cis <- hisp_cis %>% select(phenotype_id, SNP, tensor_CS, tensor_PIP)
+all_tensor_trans  <- all_trans  %>% select(phenotype_id, SNP, tensor_CS, tensor_PIP)
+euro_tensor_trans <- euro_trans %>% select(phenotype_id, SNP, tensor_CS, tensor_PIP)
+afr_tensor_trans  <- afr_trans  %>% select(phenotype_id, SNP, tensor_CS, tensor_PIP)
+chn_tensor_trans  <- chn_trans  %>% select(phenotype_id, SNP, tensor_CS, tensor_PIP)
+hisp_tensor_trans <- hisp_trans %>% select(phenotype_id, SNP, tensor_CS, tensor_PIP)
+
+#filter for PIP ≥ .9
+filter_causal <- function(data, pop_name) {
+  data %>%
+    filter(tensor_PIP >= 0.9, !is.na(tensor_PIP)) %>%
+    group_by(phenotype_id, SNP) %>%
+    summarise(
+      tensor_CS  = max(tensor_CS,  na.rm = TRUE),
+      tensor_PIP = max(tensor_PIP, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    distinct(phenotype_id, SNP, .keep_all = TRUE) %>%
+    mutate(population = pop_name)
+}
+
+all_tensor_cis_causal  <- filter_causal(all_tensor_cis,  "All Ancestries")
+euro_tensor_cis_causal <- filter_causal(euro_tensor_cis, "European")
+afr_tensor_cis_causal  <- filter_causal(afr_tensor_cis,  "African")
+chn_tensor_cis_causal  <- filter_causal(chn_tensor_cis,  "Chinese")
+hisp_tensor_cis_causal <- filter_causal(hisp_tensor_cis, "Hispanic")
+all_tensor_trans_causal  <- filter_causal(all_tensor_trans,  "All Ancestries")
+euro_tensor_trans_causal <- filter_causal(euro_tensor_trans, "European")
+afr_tensor_trans_causal  <- filter_causal(afr_tensor_trans,  "African")
+chn_tensor_trans_causal  <- filter_causal(chn_tensor_trans,  "Chinese")
+hisp_tensor_trans_causal <- filter_causal(hisp_tensor_trans, "Hispanic")
+
+#combine and count
+combined_data_cis <- rbind(
+  all_tensor_cis_causal  %>% select(population),
+  euro_tensor_cis_causal %>% select(population),
+  afr_tensor_cis_causal  %>% select(population),
+  chn_tensor_cis_causal  %>% select(population),
+  hisp_tensor_cis_causal %>% select(population)
+)
+
+combined_data_trans <- rbind(
+  all_tensor_trans_causal  %>% select(population),
+  euro_tensor_trans_causal %>% select(population),
+  afr_tensor_trans_causal  %>% select(population),
+  chn_tensor_trans_causal  %>% select(population),
+  hisp_tensor_trans_causal %>% select(population)
+)
+
+count_data_cis <- combined_data_cis %>%
+  group_by(population) %>%
+  summarise(count = n(), .groups = "drop")
+count_data_trans <- combined_data_trans %>%
+  group_by(population) %>%
+  summarise(count = n(), .groups = "drop")
+
+pop_order <- c("All Ancestries", "European", "African", "Hispanic", "Chinese")
+count_data$population <- factor(count_data$population, levels = pop_order)
+
+#add population sizes
+pop_sizes <- data.frame(
+  population = factor(pop_order, levels = pop_order),
+  pop_size   = c(2953, 1270, 675, 642, 366)
+)
+
+count_data_cis <- count_data_cis %>%
+  left_join(pop_sizes, by = "population")
+count_data_trans <- count_data_trans %>%
+  left_join(pop_sizes, by = "population")
+
+#spearman correlation
+fmt_p <- function(p) {
+  ifelse(p < 0.001, formatC(p, format = "e", digits = 2), round(p, 4))
+}
+
+cor_cis <- cor.test(count_data$pop_size, count_data$count,
+                    method = "spearman", exact = FALSE)
+cat("Spearman rho:", round(cor_cis$estimate, 3), "\n")
+cat("P-value:     ", fmt_p(cor_cis$p.value), "\n")
+
+cor_trans <- cor.test(count_data$pop_size, count_data$count,
+                    method = "spearman", exact = FALSE)
+cat("Spearman rho:", round(cor_trans$estimate, 3), "\n")
+cat("P-value:     ", fmt_p(cor_trans$p.value), "\n")
+```
+
+**By Fine-Mapping Model Testing**
+```{r}
+library(data.table)
+library(dplyr)
+library(tidyr)
+library(FSA)
+
+#load data
+data <- fread("~/compare_susie/meta_cis_tensor_vs_susier_vs_sushie_vs_multi_vs_susiex.tsv", header = TRUE)
+
+#fitler to FDR < 0.05 pQTLs
+input_all_cis <- fread("~/tensor_susie/all_race/0.05cis_locations.tsv")
+all_data <- data %>%
+  dplyr::filter(phenotype_id %in% input_all_cis$phenotype_id)
+
+#reshape to long format
+make_long <- function(data) {
+  rbindlist(list(
+    data %>% dplyr::filter(!is.na(tensor_CS), !is.na(tensor_PIP)) %>%
+      group_by(phenotype_id, SNP) %>%
+      summarise(CS = max(tensor_CS), PIP = max(tensor_PIP), .groups = "drop") %>%
+      distinct(phenotype_id, SNP, .keep_all = TRUE) %>%
+      mutate(Model = "TensorQTL"),
+    
+    data %>% dplyr::filter(!is.na(sushie_CS), !is.na(sushie_PIP)) %>%
+      group_by(phenotype_id, SNP) %>%
+      summarise(CS = max(sushie_CS), PIP = max(sushie_PIP), .groups = "drop") %>%
+      distinct(phenotype_id, SNP, .keep_all = TRUE) %>%
+      mutate(Model = "SuShiE"),
+    
+    data %>% dplyr::filter(!is.na(multi_CS), !is.na(multi_PIP)) %>%
+      group_by(phenotype_id, SNP) %>%
+      summarise(CS = max(multi_CS), PIP = max(multi_PIP), .groups = "drop") %>%
+      distinct(phenotype_id, SNP, .keep_all = TRUE) %>%
+      mutate(Model = "MultiSuSiE"),
+    
+    data %>% dplyr::filter(!is.na(susieX_CS), !is.na(susieX_PIP)) %>%
+      group_by(phenotype_id, SNP) %>%
+      summarise(CS = max(susieX_CS), PIP = max(susieX_PIP), .groups = "drop") %>%
+      distinct(phenotype_id, SNP, .keep_all = TRUE) %>%
+      mutate(Model = "SuSiEx")
+  ), fill = TRUE, use.names = TRUE)
+}
+
+long_data <- make_long(all_data)
+
+Model_order <- c("TensorQTL", "SuShiE", "MultiSuSiE", "SuSiEx")
+long_data$Model <- factor(long_data$Model, levels = Model_order)
+
+#per-CS summary (for CS size stats only)
+cs_data <- long_data %>%
+  group_by(Model, phenotype_id, CS) %>%
+  summarise(
+    cs_size = n(),
+    .groups = "drop"
+  )
+
+#per-protein max PIP (for all PIP stats)
+max_pip_protein <- long_data %>%
+  group_by(Model, phenotype_id) %>%
+  summarise(
+    max_pip = max(PIP, na.rm = TRUE),
+    .groups = "drop"
+  )
+max_pip_protein$Model <- factor(max_pip_protein$Model, levels = Model_order)
+
+#format p-value
+fmt_p <- function(p) {
+  ifelse(p < 0.001, formatC(p, format = "e", digits = 2), round(p, 4))
+}
+
+#statistics
+desc_cs <- cs_data %>%
+  group_by(Model) %>%
+  summarise(
+    N_credible_sets  = n(),
+    Mean_CS_size     = round(mean(cs_size),   2),
+    Median_CS_size   = round(median(cs_size), 1),
+    .groups = "drop"
+  )
+
+desc_pip <- max_pip_protein %>%
+  group_by(Model) %>%
+  summarise(
+    Mean_max_PIP   = round(mean(max_pip),   3),
+    Median_max_PIP = round(median(max_pip), 3),
+    .groups = "drop"
+  )
+
+high_pip <- long_data %>%
+  group_by(Model) %>%
+  summarise(
+    N_PIP_gte_0.9    = sum(PIP >= 0.9, na.rm = TRUE),
+    Prop_PIP_gte_0.9 = round(mean(PIP >= 0.9, na.rm = TRUE), 4),
+    .groups = "drop"
+  )
+
+desc_full <- desc_cs %>%
+  left_join(desc_pip, by = "Model") %>%
+  left_join(high_pip, by = "Model")
+
+print(as.data.frame(desc_full), row.names = FALSE)
+
+#Kruskal-Wallis test
+kw_cs  <- kruskal.test(cs_size ~ Model, data = cs_data)
+kw_pip <- kruskal.test(max_pip ~ Model, data = max_pip_protein)
+
+pip09_table <- long_data %>%
+  mutate(high = PIP >= 0.9) %>%
+  group_by(Model, high) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  pivot_wider(names_from = high, values_from = n, values_fill = 0) %>%
+  dplyr::select(-Model) %>%
+  as.matrix()
+rownames(pip09_table) <- levels(long_data$Model)
+chisq_09 <- chisq.test(pip09_table)
+
+overall_tests <- data.frame(
+  Outcome     = c("Credible Set Size", "Max PIP per Protein", "Proportion PIP >= 0.9"),
+  Test        = c("Kruskal-Wallis", "Kruskal-Wallis", "Chi-square"),
+  Statistic   = round(c(kw_cs$statistic, kw_pip$statistic, chisq_09$statistic), 3),
+  df          = c(kw_cs$parameter, kw_pip$parameter, chisq_09$parameter),
+  P_value     = fmt_p(c(kw_cs$p.value, kw_pip$p.value, chisq_09$p.value)),
+  Significant = c(kw_cs$p.value < 0.05, kw_pip$p.value < 0.05, chisq_09$p.value < 0.05)
+)
+
+print(overall_tests, row.names = FALSE)
+
+#post-hoc dunns test
+dunn_cs  <- dunnTest(cs_size ~ Model, data = cs_data,         method = "bonferroni")$res
+dunn_pip <- dunnTest(max_pip ~ Model, data = max_pip_protein,  method = "bonferroni")$res
+
+format_dunn <- function(d, outcome_label) {
+  d %>%
+    transmute(
+      Outcome     = outcome_label,
+      Comparison  = Comparison,
+      Z           = round(Z, 3),
+      P_unadj     = fmt_p(P.unadj),
+      Significant = P.unadj < 0.05
+    )
+}
+
+pairwise_cs  <- format_dunn(dunn_cs,  "Credible Set Size")
+pairwise_pip <- format_dunn(dunn_pip, "Max PIP per Protein")
+pairwise_all <- rbind(pairwise_cs, pairwise_pip)
+
+print(as.data.frame(pairwise_all), row.names = FALSE)
+```
+
+**Max PIP/Protein Correlations**
+```{r}
+#load data
+data <- read.table("~/compare_susie/meta_cis_tensor_vs_susier_vs_sushie_vs_multi_vs_susiex.tsv", header = TRUE, stringsAsFactors = FALSE, sep = "\t")
+
+#filter to FDR < 0.05 pQTLs
+input_oids <- fread("~/tensor_susie/all_race/0.05cis_locations.tsv") %>%
+  select(phenotype_id)
+
+#calculate max PIP per protein for each method
+max_pip_data <- data %>%
+  group_by(phenotype_id) %>%
+  summarise(
+    tensor_max = suppressWarnings(max(tensor_PIP, na.rm = TRUE)),
+    susieR_max = suppressWarnings(max(susieR_PIP, na.rm = TRUE)),
+    sushie_max = suppressWarnings(max(sushie_PIP, na.rm = TRUE)),
+    multi_max = suppressWarnings(max(multi_PIP, na.rm = TRUE)),
+    susieX_max = suppressWarnings(max(susieX_PIP, na.rm = TRUE)),
+    .groups = 'drop'
+  ) %>%
+  mutate(
+    tensor_max = ifelse(is.infinite(tensor_max), NA, tensor_max),
+    susieR_max = ifelse(is.infinite(susieR_max), NA, susieR_max),
+    sushie_max = ifelse(is.infinite(sushie_max), NA, sushie_max),
+    multi_max = ifelse(is.infinite(multi_max), NA, multi_max),
+    susieX_max = ifelse(is.infinite(susieX_max), NA, susieX_max)
+  )
+
+#calculate correlation matrix
+methods <- c("tensor_max", "susieR_max", "sushie_max", "multi_max", "susieX_max")
+method_names <- c("TensorQTL", "SusieR", "SuShiE", "Multi-SuSiE", "SuSiEx")
+
+#build matricies
+max_pip_clean <- na.omit(max_pip_data[, methods, with = FALSE])
+
+correlation_matrix <- matrix(NA, nrow = length(methods), ncol = length(methods))
+rownames(correlation_matrix) <- method_names
+colnames(correlation_matrix) <- method_names
+
+pvalue_matrix <- matrix(NA, nrow = length(methods), ncol = length(methods))
+rownames(pvalue_matrix) <- method_names
+colnames(pvalue_matrix) <- method_names
+
+for (i in 1:length(methods)) {
+  for (j in 1:length(methods)) {
+    pair_data <- max_pip_data[, c(methods[i], methods[j])]
+    pair_clean <- na.omit(pair_data)
+    test <- cor.test(
+      pair_clean[[methods[i]]],
+      pair_clean[[methods[j]]],
+      method = "spearman",
+      exact = FALSE
+    )
+    correlation_matrix[i, j] <- test$estimate
+    pvalue_matrix[i, j] <- test$p.value
+  }
+}
+
+print(round(correlation_matrix, 3))
+print(format(pvalue_matrix, scientific = TRUE, digits = 3))
+```
+

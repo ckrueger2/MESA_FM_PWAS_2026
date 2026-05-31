@@ -1,0 +1,2376 @@
+---
+title: "Final Plots"
+author: "Claudia Krueger"
+date: "2026-04-06"
+output: html_document
+---
+
+PCA:
+```{r}
+library(dplyr)
+library(data.table)
+library(ggplot2)
+library(stringr)
+
+pops = fread("~/1000g_phase3_hg38_plink/all_hg38.psam")
+evec = fread("~/final_qc2/1000g_mesa/pca.eigenvec")
+eval = fread("~/final_qc2/1000g_mesa/pca.eigenval")
+mesa = fread("~/gwas_qc/pre_qc/proteomics_allrace_freeze22.txt")
+mesapop = unique(select(mesa, FID, race1c.x))
+
+#recode populations
+mesapop <- mesapop %>%
+  mutate(race1c.x = recode(race1c.x,
+                           "1" = "EUR (MESA)",
+                           "2" = "CHN (MESA)",
+                           "3" = "AFR (MESA)",
+                           "4" = "HIS (MESA)"))
+pops <- pops %>%
+  mutate(SuperPop = recode(SuperPop,
+                           "EUR" = "EUR (1KG)",
+                           "AFR" = "AFR (1KG)",
+                           "AMR" = "AMR (1KG)",
+                           "EAS" = "EAS (1KG)",
+                           "SAS" = "SAS (1KG)"))
+
+
+#merge populations
+all = left_join(evec, pops, by = c("IID" = "#IID"))
+all = left_join(all, mesapop, by = "FID")
+all = mutate(all, pop = ifelse(is.na(race1c.x), SuperPop, race1c.x),
+             finepop = ifelse(is.na(race1c.x), Population, race1c.x))
+
+all <- all %>%
+  filter(is.na(SuperPop) | SuperPop != "SAS (1KG)")
+#custom color scheme
+mesa_colors <- c("EUR (MESA)" = "orange2",
+                 "CHN (MESA)" = "lightblue3",
+                 "AFR (MESA)" = "darkolivegreen3",
+                 "HIS (MESA)" = "plum3")
+
+g1k_colors <- c("AFR (1KG)" = "darkolivegreen1",
+                "AMR (1KG)" = "plum1",
+                "EAS (1KG)" = "lightblue1",
+                "EUR (1KG)" = "#FFC933",
+                "SAS (1KG)" = "#BFBFBF")
+
+#combine the palettes
+all_colors <- c(mesa_colors, g1k_colors)
+
+create_pca_plot <- function(data, pc_x, pc_y) {
+  #split data into MESA and 1000G for layering
+  data_1000g <- data %>% filter(!pop %in% c("EUR (MESA)", "CHN (MESA)", "AFR (MESA)", "HIS (MESA)"))
+  data_mesa <- data %>% filter(pop %in% c("EUR (MESA)", "CHN (MESA)", "AFR (MESA)", "HIS (MESA)"))
+
+  p <- ggplot() +
+    #add MESA populations in the background
+    geom_point(data = data_mesa, 
+               aes(x = !!sym(pc_x), y = !!sym(pc_y), color = pop),
+               size = 3, alpha = 0.8, shape = 16) +
+    #add 1000G populations on top with transparency
+    geom_point(data = data_1000g, aes(x = !!sym(pc_x), y = !!sym(pc_y), color = pop),
+               size = 3, alpha = 0.5, shape = 16) +
+    scale_color_manual(values = all_colors,
+                       limits = c(
+                         "EUR (1KG)",
+                         "EUR (MESA)",
+                         "AFR (1KG)",
+                         "AFR (MESA)",
+                         "EAS (1KG)",
+                         "CHN (MESA)",
+                         "AMR (1KG)",
+                         "HIS (MESA)")) +
+    labs(title = "TOPMed MESA PCA Overlaid with 1KG PCA",
+         color = "Population") +
+    theme_bw(16) +
+    theme(
+      text = element_text(size = 14),
+      axis.title.x = element_text(size = 20, face = "bold"),
+      axis.title.y = element_text(size = 20, face = "bold"),
+      axis.text = element_text(size = 18),
+      #plot.title = element_text(size = 25, face = "bold", hjust = 0.5),
+      plot.title = element_blank(),
+      legend.position = "right",
+      legend.title = element_text(size = 22, face = "bold"),
+      legend.text = element_text(size = 20),
+      plot.margin = margin(t = 40, r = 20, b = 20, l = 20)
+    ) +
+    guides(
+      color = guide_legend(
+        override.aes = list(size = 6, alpha = 1)
+      )
+    )
+  
+  ggsave("~/final_plots/quality_control/pca_w_1kg.png", plot = p, width = 12, height = 10, dpi = 1000)
+  
+  tiff("~/final_plots/thesis_pca.tiff", width = 12, height = 10, units = 'in', res = 1000, compression = 'lzw')
+  print(p)
+  dev.off()
+}
+
+create_pca_plot(all, "PC1", "PC2")
+```
+
+pGene Counts:
+```{r}
+library(dplyr)
+library(data.table)
+library(ggplot2)
+
+counts <- read.table('~/qtl_mapping/manhattan_plots/mcorr_protein_counts_1_fdr_snp.txt', header=TRUE, strip.white=TRUE)
+counts <- mutate(counts, n=c(675,675,366,366,1270,1270,642,642,2953,2953))
+
+#split by model
+cis_data <- counts %>% filter(model == "cis-pGenes")
+trans_data <- counts %>% filter(model == "trans-pGenes")
+
+his_data <- counts %>% filter(pop == "HIS")
+chn_data <- counts %>% filter(pop == "CHN")
+afr_data <- counts %>% filter(pop == "AFR")
+other_data <- counts %>% filter(!(pop %in% c("HIS", "CHN", "AFR")))
+his_cis <- cis_data %>% filter(pop == "HIS")
+chn_cis <- cis_data %>% filter(pop == "CHN")
+afr_cis <- cis_data %>% filter(pop == "AFR")
+his_trans <- trans_data %>% filter(pop == "HIS")
+chn_trans <- trans_data %>% filter(pop == "CHN")
+afr_trans <- trans_data %>% filter(pop == "AFR")
+
+#linear regression for cis genes
+data <- data.frame(
+  population = c("AFR", "CHN", "EUR", "HIS", "ALL"),
+  pop_size = c(675, 366, 1270, 642, 2953),
+  cis_count = c(2585, 2323, 2760, 2572, 2805),
+  trans_count = c(677, 1071, 657, 784, 591)
+)
+
+cis_model <- lm(cis_count ~ pop_size, data = data)
+cis_summary <- summary(cis_model)
+trans_model <- lm(trans_count ~ pop_size, data = data)
+trans_summary <- summary(trans_model)
+
+png("~/final_plots/sample_size/tensor_pgene_vs_pop.png", width = 10, height = 9.5, units = 'cm', res = 1000) 
+
+a <- ggplot(counts, aes(x=n, y=count, color=model, fill=model)) +
+  geom_point() +
+  geom_label(data = other_data, aes(label=pop), nudge_y=125, alpha=0.1, size=2.8) +
+  geom_label(data = his_trans, aes(label=pop), nudge_x=-200, nudge_y=0, alpha=0.1, size=2.8) +
+  geom_label(data = chn_trans, aes(label=pop), nudge_x=-220, nudge_y=0, alpha=0.1, size=2.8) +
+  geom_label(data = afr_trans, aes(label=pop), nudge_x=200, nudge_y=0, alpha=0.1, size=2.8) +
+  geom_label(data = his_cis, aes(label=pop), nudge_x=-200, nudge_y=0, alpha=0.1, size=2.8) +
+  geom_label(data = chn_cis, aes(label=pop), nudge_x=-220, nudge_y=0, alpha=0.1, size=2.8) +
+  geom_label(data = afr_cis, aes(label=pop), nudge_x=200, nudge_y=0, alpha=0.1, size=2.8) +
+  scale_color_viridis_d(begin=0, end=0.7, name = "pGene", labels = c("cis-pGenes","trans-pGenes")) +
+  theme_bw(12) +
+  scale_fill_viridis_d(begin=0, end=0.7, name = "pGene", labels = c("cis-pGenes","trans-pGenes")) +
+  xlab("Population Size") + ylab(expression("pGene Count")) +
+  guides(color = guide_legend(override.aes = list(shape = NA, label = "  "))) +
+  theme(legend.text = element_text(size = 10),
+        legend.title = element_text(size = 10),
+        plot.title = element_blank(),
+        legend.position = "none") +
+  coord_cartesian(ylim=c(500,3000), xlim=c(0,3000)) +
+  scale_y_continuous(breaks = c(500, 1000, 1500, 2000, 2500, 3000),
+                     labels = c("500", "1000", "1500", "2000", "2500", "3000")) #+
+
+a
+
+dev.off()
+```
+
+pSNP Counts:
+```{r}
+library(dplyr)
+library(data.table)
+library(ggplot2)
+
+data <- data.frame(
+  population = c("AFR", "CHN", "EUR", "HIS", "ALL"),
+  pop_size = c(675, 366, 1270, 642, 2953),
+  cis_count = c(208536, 136757, 433556, 243137, 514717),
+  trans_count = c(16673, 50226, 33117, 32819, 42543)
+)
+
+
+#linear regression: cis pSNP count vs population size
+cis_model <- lm(cis_count ~ pop_size, data = data)
+cis_summary <- summary(cis_model)
+
+#linear regression: trans pSNP count vs population size  
+trans_model <- lm(trans_count ~ pop_size, data = data)
+trans_summary <- summary(trans_model)
+
+counts <- read.table('~/qtl_mapping/manhattan_plots/mcorr_protein_counts_qval_tensor_psnps.txt', header=TRUE, strip.white=TRUE)
+counts <- mutate(counts, n=c(675,675,366,366,1270,1270,642,642,2953,2953))
+
+#split by model
+cis_data <- counts %>% filter(model == "cis-pSNPs")
+trans_data <- counts %>% filter(model == "trans-pSNPs")
+
+his_data <- counts %>% filter(pop == "HIS")
+chn_data <- counts %>% filter(pop == "CHN")
+afr_data <- counts %>% filter(pop == "AFR")
+other_data <- counts %>% filter(!(pop %in% c("HIS", "CHN", "AFR")))
+his_cis <- cis_data %>% filter(pop == "HIS")
+chn_cis <- cis_data %>% filter(pop == "CHN")
+afr_cis <- cis_data %>% filter(pop == "AFR")
+his_trans <- trans_data %>% filter(pop == "HIS")
+chn_trans <- trans_data %>% filter(pop == "CHN")
+afr_trans <- trans_data %>% filter(pop == "AFR")
+
+png("~/final_plots/sample_size/tensor_psnp_vs_pop.png", width = 10, height = 9.5, units = 'cm', res = 1000) 
+
+b <- ggplot(counts,aes(x=n,y=count,color=model,fill=model)) + 
+  geom_point() + 
+  geom_label(data = other_data, aes(label=pop), nudge_y=28000, alpha=0.1, size=2.8) +
+  geom_label(data = his_trans, aes(label=pop), nudge_x=0, nudge_y=28000, alpha=0.1, size=2.8) +
+  geom_label(data = chn_trans, aes(label=pop), nudge_x=-220, nudge_y=0, alpha=0.1, size=2.8) +
+  geom_label(data = afr_trans, aes(label=pop), nudge_x=200, nudge_y=0, alpha=0.1, size=2.8) +
+  geom_label(data = his_cis, aes(label=pop), nudge_x=0, nudge_y=28000, alpha=0.1, size=2.8) +
+  geom_label(data = chn_cis, aes(label=pop), nudge_x=-220, nudge_y=0, alpha=0.1, size=2.8) +
+  geom_label(data = afr_cis, aes(label=pop), nudge_x=200, nudge_y=0, alpha=0.1, size=2.8) +
+  geom_abline(intercept = cis_model$coefficients[1], 
+              slope = cis_model$coefficients[2], 
+              color = "purple4", 
+              linetype = "dotted", 
+              linewidth = 0.5,
+              alpha = 0.4) +
+  scale_color_viridis_d(begin=0,end=0.7,name = "pSNP", labels = c("cis-pSNPs","trans-pSNPs")) +
+  theme_bw(12) + 
+  scale_fill_viridis_d(begin=0,end=0.7,name = "pSNP", labels = c("cis-pSNPs","trans-pSNPs")) +
+  xlab("Population Size") + ylab(expression("pSNP Count")) +
+  guides(color = guide_legend(override.aes = list(shape = NA, label = "  "))) +
+  theme(legend.text = element_text(size = 10),
+        legend.title = element_text(size = 10),
+        plot.title = element_blank(),
+        legend.position = "none") +
+  coord_cartesian(ylim=c(0,600000), xlim=c(0,3000)) + 
+  scale_y_continuous(breaks = c(0, 100000, 200000, 300000, 400000, 500000, 600000),
+                     labels = c("0", "100000", "200000", "300000", "400000", "500000", "600000"))
+
+b
+
+dev.off()
+```
+
+tiff for pGene and pSNP
+```{r}
+library(gridExtra)
+library(cowplot)
+
+#tiff("~/final_plots/sup_figure_1.tiff", width = 22, height = 9.5, units = 'cm', res = 1000, compression = 'lzw')
+#plot_grid(a, b, nrow = 1, labels = c("A", "B"), label_size = 16)
+tiff("~/final_plots/thesis_figure_3.tiff", width = 22, height = 9.5, units = 'cm', res = 1000, compression = 'lzw')
+plot_grid(a, b, nrow = 1, labels = c("a.", "b."), label_size = 16)
+dev.off()
+```
+
+pi1:
+```{r}
+library(ggplot2)
+library(tidyr)
+
+ukbb_pi1_data <- data.frame(
+  ancestry = rep(rep(c("All Ancestries", "European", "African", "American", "East Asian"), each = 2), 5),
+  type = rep(rep(c("Cis", "Trans"), 5), 5),
+  set = rep(c("All Ancestries", "European", "African", "Hispanic", "Chinese"), each = 10),
+  pi1 = c(
+    # vs All Ancestries
+    0.9328104, 0.8833802,  # All - Cis, Trans
+    0.9400908, 0.9752829,  # European - Cis, Trans
+    0.5979682, 0.6993171,  # African - Cis, Trans
+    0.2706487, 0.4618313,  # Hispanic - Cis, Trans
+    0.4877051, 0.5389798,  # Chinese - Cis, Trans
+    
+    # vs European
+    0.9584785, 0.8733695,  # All - Cis, Trans
+    0.9457081, 0.8780151,  # European - Cis, Trans
+    0.5510122, 0.7087249,  # African - Cis, Trans
+    0.3512968, 0.5615556,  # Hispanic - Cis, Trans
+    0.5151062, 0.4055298,  # Chinese - Cis, Trans
+    
+    # vs African
+    0.9047181, 0.4066794,  # All - Cis, Trans
+    0.8921896, 0.6433923,  # European - Cis, Trans
+    0.8633718, 0.3936020,   # African - Cis, Trans
+    0.4446918, 0.7368221,  # Hispanic - Cis, Trans
+    0.5695413, 0.6687232,  # Chinese - Cis, Trans
+    
+    # vs Hispanic
+    0.8948264, 0.3148295,  # All - Cis, Trans
+    0.8960979, 0.4887785,  # European - Cis, Trans
+    0.6307122, 0.2281410,   # African - Cis, Trans
+    0.4919958, 0.9389946,  # Hispanic - Cis, Trans
+    0.6015944, 0.4106568,  # Chinese - Cis, Trans
+    
+    # vs Chinese
+    0.9134872, 0.2074349,  # All - Cis, Trans
+    0.9064887, 0.2062995,  # European - Cis, Trans
+    0.6623694, 0.0000000,   # African - Cis, Trans
+    0.4662497, 0.1025131,  # Hispanic - Cis, Trans
+    0.8374877, 0.1576432  # Chinese - Cis, Trans
+  )
+)
+
+ukbb_pi1_data$ancestry <- factor(ukbb_pi1_data$ancestry, 
+                                 levels = c("East Asian", "American", "African", "European", "All Ancestries"))
+
+ukbb_pi1_data$set <- factor(ukbb_pi1_data$set,
+                            levels = c("All Ancestries", "European", "African", "Hispanic", "Chinese"))
+
+mesa_n <- c(
+  "All Ancestries" = 2953,
+  "European" = 1270,
+  "African" = 675,
+  "Hispanic" = 642,
+  "Chinese" = 366
+)
+
+ukbb_n <- c(
+  "All Ancestries" = 34871,
+  "European" = 33187,
+  "African" = 931,
+  "American" = 97,
+  "East Asian" = 262
+)
+
+levels(ukbb_pi1_data$set) <-
+  paste0(levels(ukbb_pi1_data$set),
+         "\n(n=", mesa_n[levels(ukbb_pi1_data$set)], ")")
+
+levels(ukbb_pi1_data$ancestry) <-
+  paste0(levels(ukbb_pi1_data$ancestry),
+         "\n(n=", ukbb_n[levels(ukbb_pi1_data$ancestry)], ")")
+
+#define colors
+ancestry_colors_mesa <- c(
+  "All Ancestries" = "red3",
+  "European" = "orange2", 
+  "African" = "darkolivegreen3",
+  "Hispanic" = "plum3",
+  "Chinese" = "lightblue3"
+)
+
+ancestry_colors_ukbb <- c(
+  "East Asian" = "lightblue4",
+  "American" = "plum4",
+  "African" = "darkolivegreen4",
+  "European" = "orange3", 
+  "All Ancestries" = "red4"
+)
+
+#create the heatmap
+p <- ggplot(ukbb_pi1_data, aes(x = set, y = ancestry, fill = pi1)) +
+  geom_tile(color = "white", linewidth = 1.5) +
+  geom_text(aes(label = round(pi1, 2)), size = 5.5, fontface = "bold", color = "black") +
+  facet_wrap(~ type, ncol = 2) +
+  scale_fill_gradient2(
+    low = "#8ec1da",
+    mid = "#ededed", 
+    high = "#d47264",
+    midpoint = 0.5,
+    limits = c(0, 1),
+    name = "π1 Value",
+    breaks = seq(0, 1, 0.2)
+  ) +
+  labs(
+    title = "TOPMed MESA-Discovered pQTL Replication in UKB",
+    x = "TOPMed MESA Discovery Ancestry",
+    y = "UKB Validation Ancestry"
+  ) +
+  theme_minimal() +
+  theme(
+    text = element_text(size = 28),
+    axis.title.x = element_text(size = 18, face = "bold", margin = margin(t = 15)),
+    axis.title.y = element_text(size = 18, face = "bold", margin = margin(r = 15)),
+    axis.text.x = element_text(size = 18, face = "bold", angle = 45, hjust = 1,
+                               color = ancestry_colors_mesa),
+    axis.text.y = element_text(size = 18, face = "bold",
+                               color = ancestry_colors_ukbb),
+    plot.title = element_blank(),
+    legend.position = "right",
+    legend.title = element_text(face = "bold", size = 18),
+    legend.text = element_text(size = 14),
+    legend.key.height = unit(1.5, "cm"),
+    strip.text = element_text(size = 20, face = "bold", color = "black"),
+    panel.grid = element_blank(),
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 1),
+    plot.margin = margin(t = 20, r = 20, b = 20, l = 20)
+  )
+
+#save
+ggsave("~/final_plots/validation/mesa_vs_ukbb_pi1_heatmap_matrix_colored.png", plot = p, width = 16, height = 10, dpi = 1000)
+
+tiff("~/final_plots/figure_2.tiff", width = 16, height = 10, units = 'in', res = 1000, compression = 'lzw')
+print(p)
+dev.off()
+```
+
+pi1 SNP Counts:
+```{r}
+library(ggplot2)
+library(patchwork)
+
+ukbb_snp_data <- data.frame(
+  ancestry = rep(rep(c("All Ancestries", "European", "African", "American", "East Asian"), each = 2), 5),
+  type = rep(rep(c("Cis", "Trans"), 5), 5),
+  set = rep(c("All Ancestries", "European", "African", "Hispanic", "Chinese"), each = 10),
+  snp_count = c(
+    # vs All Ancestries (MESA discovery)
+    344142, 19630,
+    286613, 15519,
+    312886, 18915,
+    219537, 12973,
+    209796, 12111,
+
+    # vs European
+    279586, 14535,
+    279208, 14523,
+    248482, 12551,
+    222048, 10442,
+    205317, 9440,
+
+    # vs African
+    148480, 6859,
+    95361,  3217,
+    153221, 10433,
+    76478,  1830,
+    72397,  1687,
+
+    # vs Hispanic
+    161996, 23846,
+    145982, 10243,
+    151390, 19624,
+    124349, 3055,
+    118427, 3934,
+
+    # vs Chinese
+    86451,  13870,
+    81807,  11488,
+    80287,  11701,
+    71731,  7059,
+    86029,  8749
+  )
+)
+
+ukbb_snp_data$ancestry <- factor(ukbb_snp_data$ancestry,
+                                 levels = c("East Asian", "American", "African", "European", "All Ancestries"))
+
+ukbb_snp_data$set <- factor(ukbb_snp_data$set,
+                            levels = c("All Ancestries", "European", "African", "Hispanic", "Chinese"))
+
+mesa_n <- c(
+  "All Ancestries" = 2953,
+  "European" = 1270,
+  "African" = 675,
+  "Hispanic" = 642,
+  "Chinese" = 366
+)
+
+ukbb_n <- c(
+  "All Ancestries" = 34871,
+  "European" = 33187,
+  "African" = 931,
+  "American" = 97,
+  "East Asian" = 262
+)
+
+levels(ukbb_snp_data$set) <-
+  paste0(levels(ukbb_snp_data$set),
+         "\n(n=", mesa_n[levels(ukbb_snp_data$set)], ")")
+
+levels(ukbb_snp_data$ancestry) <-
+  paste0(levels(ukbb_snp_data$ancestry),
+         "\n(n=", ukbb_n[levels(ukbb_snp_data$ancestry)], ")")
+
+ancestry_colors_mesa <- c(
+  "All Ancestries\n(n=2953)" = "red3",
+  "European\n(n=1270)"       = "orange2",
+  "African\n(n=675)"         = "darkolivegreen3",
+  "Hispanic\n(n=642)"        = "plum3",
+  "Chinese\n(n=366)"         = "lightblue3"
+)
+
+ancestry_colors_ukbb <- c(
+  "East Asian\n(n=262)"      = "lightblue4",
+  "American\n(n=97)"         = "plum4",
+  "African\n(n=931)"         = "darkolivegreen4",
+  "European\n(n=33187)"      = "orange3",
+  "All Ancestries\n(n=34871)"= "red4"
+)
+
+#split data
+cis_data   <- ukbb_snp_data[ukbb_snp_data$type == "Cis", ]
+trans_data <- ukbb_snp_data[ukbb_snp_data$type == "Trans", ]
+
+#shared theme
+heatmap_theme <- function(color_vec) {
+  theme_minimal() +
+  theme(
+    text = element_text(size = 28),
+    axis.title.x = element_text(size = 18, face = "bold", margin = margin(t = 15)),
+    axis.title.y = element_text(size = 18, face = "bold", margin = margin(r = 15)),
+    axis.text.x = element_text(size = 18, face = "bold", angle = 45, hjust = 1,
+                               color = color_vec[levels(ukbb_snp_data$set)]),
+    axis.text.y = element_text(size = 18, face = "bold",
+                               color = color_vec[levels(ukbb_snp_data$ancestry)]),
+    plot.title = element_text(size = 20, face = "bold", hjust = 0.5),
+    legend.position = "right",
+    legend.title = element_text(face = "bold", size = 18),
+    legend.text = element_text(size = 16),
+    legend.key.height = unit(1.5, "cm"),
+    panel.grid = element_blank(),
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 1),
+    plot.margin = margin(t = 20, r = 20, b = 20, l = 20)
+  )
+}
+
+#cis plot - remove x title
+p_cis <- ggplot(cis_data, aes(x = set, y = ancestry, fill = snp_count)) +
+  geom_tile(color = "white", linewidth = 1.5) +
+  geom_text(aes(label = scales::comma(snp_count)), size = 5.5, fontface = "bold", color = "black") +
+  scale_fill_gradient2(
+    low      = "#8ec1da",
+    mid      = "#ededed",
+    high     = "#d47264",
+    midpoint = median(cis_data$snp_count),
+    name     = "Cis\nSNP Count",
+    labels   = scales::comma
+  ) +
+  labs(title = "Cis", x = NULL, y = "UKB Validation Ancestry") +
+  heatmap_theme(c(ancestry_colors_mesa, ancestry_colors_ukbb))
+
+#trans plot - remove x title
+p_trans <- ggplot(trans_data, aes(x = set, y = ancestry, fill = snp_count)) +
+  geom_tile(color = "white", linewidth = 1.5) +
+  geom_text(aes(label = scales::comma(snp_count)), size = 5.5, fontface = "bold", color = "black") +
+  scale_fill_gradient2(
+    low      = "#8ec1da",
+    mid      = "#ededed",
+    high     = "#d47264",
+    midpoint = median(trans_data$snp_count),
+    name     = "Trans\nSNP Count",
+    labels   = scales::comma
+  ) +
+  labs(title = "Trans", x = NULL, y = NULL) +
+  heatmap_theme(c(ancestry_colors_mesa, ancestry_colors_ukbb)) +
+  theme(axis.text.y = element_blank())
+
+#combine with shared x-axis label
+p_snp <- p_cis + p_trans +
+  plot_layout(widths = c(1, 1)) +
+  plot_annotation(
+    caption = "TOPMed MESA Discovery Ancestry",
+    theme = theme(
+      plot.caption = element_text(size = 18, face = "bold", hjust = 0.5,
+                                  margin = margin(t = 5))
+    )
+  )
+
+ggsave("~/final_plots/validation/mesa_vs_ukbb_snp_count_heatmap_matrix_colored.png",
+       plot = p_snp, width = 20, height = 10, dpi = 1000)
+
+tiff("~/final_plots/sup_figure_2.tiff",
+     width = 20, height = 10, units = 'in', res = 1000, compression = 'lzw')
+print(p_snp)
+dev.off()
+```
+
+TOPMed MESA Credible Set Count per Protein:
+```{r}
+library(data.table)
+library(dplyr)
+library(ggplot2)
+
+#load the data files
+cis_all <- fread("~/tensor_susie/all_race/0.05cis_finemap_dedup.tsv", header=TRUE)
+cis_euro <- fread("~/tensor_susie/euro_amer/0.05cis_finemap_dedup.tsv", header=TRUE)
+cis_afr <- fread("~/tensor_susie/afr_amer/0.05cis_finemap_dedup.tsv", header=TRUE)
+cis_hisp <- fread("~/tensor_susie/hisp_amer/0.05cis_finemap_dedup.tsv", header=TRUE)
+cis_chn <- fread("~/tensor_susie/chn_amer/0.05cis_finemap_dedup.tsv", header=TRUE)
+trans_all <- fread("~/tensor_susie/all_race/0.05trans_finemap_edited.tsv", header=TRUE)
+trans_euro <- fread("~/tensor_susie/euro_amer/0.05trans_finemap_edited.tsv", header=TRUE)
+trans_afr <- fread("~/tensor_susie/afr_amer/0.05trans_finemap_edited.tsv", header=TRUE)
+trans_hisp <- fread("~/tensor_susie/hisp_amer/0.05trans_finemap_edited.tsv", header=TRUE)
+trans_chn <- fread("~/tensor_susie/chn_amer/0.05trans_finemap_edited.tsv", header=TRUE)
+
+#process each dataset to get the number of credible sets per gene_id
+process_data <- function(data, pop_name) {
+  unique_cs <- data %>% 
+    distinct(gene_id, cs_label, .keep_all = TRUE)
+  
+  protein_counts <- unique_cs %>%
+    group_by(gene_id) %>%
+    summarise(cs_count = n()) %>%
+    # Create a category for 6+ credible sets
+    mutate(
+      cs_category = ifelse(cs_count >= 6, "6+", as.character(cs_count)),
+      population = pop_name
+    )
+  
+  return(protein_counts)
+}
+
+#process all datasets
+all_pop_cis <- process_data(cis_all, "ALL")
+euro_pop_cis <- process_data(cis_euro, "EUR")
+afr_pop_cis <- process_data(cis_afr, "AFR") 
+hisp_pop_cis <- process_data(cis_hisp, "HIS")
+chn_pop_cis <- process_data(cis_chn, "CHN")
+all_pop_trans <- process_data(trans_all, "ALL")
+euro_pop_trans <- process_data(trans_euro, "EUR")
+afr_pop_trans <- process_data(trans_afr, "AFR") 
+hisp_pop_trans <- process_data(trans_hisp, "HIS")
+chn_pop_trans <- process_data(trans_chn, "CHN")
+
+#combine all the data
+combined_data_cis <- rbind(all_pop_cis, euro_pop_cis, afr_pop_cis, hisp_pop_cis, chn_pop_cis)
+
+combined_data_trans <- rbind(all_pop_trans, euro_pop_trans, afr_pop_trans, hisp_pop_trans, chn_pop_trans)
+
+#set the population order (factor levels)
+combined_data_cis$population <- factor(combined_data_cis$population, 
+                                   levels = c("ALL", "EUR", "AFR", "HIS", "CHN"))
+combined_data_trans$population <- factor(combined_data_trans$population, 
+                                   levels = c("ALL", "EUR", "AFR", "HIS", "CHN"))
+
+#convert cs_category to factor with proper ordering
+combined_data_cis$cs_category <- factor(combined_data_cis$cs_category, 
+                                    levels = c("1", "2", "3", "4", "5", "6+"))
+combined_data_trans$cs_category <- factor(combined_data_trans$cs_category, 
+                                    levels = c("1", "2", "3", "4", "5", "6+"))
+
+#calculate the counts of each category in each population
+category_counts_cis <- combined_data_cis %>%
+  group_by(population, cs_category) %>%
+  summarise(count = n(), .groups = "drop")
+category_counts_trans <- combined_data_trans %>%
+  group_by(population, cs_category) %>%
+  summarise(count = n(), .groups = "drop")
+
+#bar plot
+p_cis <- ggplot(category_counts_cis, aes(x = cs_category, y = count, fill = population)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.7), width = 0.6) +
+  scale_fill_manual(values = c("ALL" = "red3", 
+                               "EUR" = "orange2", 
+                               "AFR" = "darkolivegreen3", 
+                               "HIS" = "plum3", 
+                               "CHN" = "lightblue3")) +
+  labs(title = "TensorQTL Cis Credible Set Count per Protein",
+       x = "Number of Credible Sets",
+       y = "Protein Count") +
+  theme_minimal() +
+  theme(
+    text = element_text(size = 14),
+    axis.title.x = element_text(size = 20, face = "bold", margin = margin(t = 15)),
+    axis.title.y = element_text(size = 20, face = "bold", margin = margin(r = 20)),
+    axis.text = element_text(size = 16, face = "bold"),
+    #plot.title = element_text(size = 25, face = "bold", hjust = 0.5),
+    plot.title = element_blank(),
+    legend.position = "top",
+    legend.text = element_text(size = 16),
+    legend.title = element_blank(),
+    plot.margin = margin(t = 40, r = 20, b = 20, l = 20)
+  )
+ggsave("~/final_plots/fine_mapping/cis_cs_per_protein_barplot.png", p_cis, height = 8.33, width = 11.1)
+
+p_trans <- ggplot(category_counts_trans, aes(x = cs_category, y = count, fill = population)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.7), width = 0.6) +
+  scale_fill_manual(values = c("ALL" = "red3", 
+                               "EUR" = "orange2", 
+                               "AFR" = "darkolivegreen3", 
+                               "HIS" = "plum3", 
+                               "CHN" = "lightblue3")) +
+  labs(title = "TensorQTL Trans Credible Set Count per Protein",
+       x = "Number of Credible Sets",
+       y = "Protein Count") +
+  theme_minimal() +
+  theme(
+    text = element_text(size = 14),
+    axis.title.x = element_text(size = 20, face = "bold", margin = margin(t = 15)),
+    axis.title.y = element_text(size = 20, face = "bold", margin = margin(r = 20)),
+    axis.text = element_text(size = 16, face = "bold"),
+    #plot.title = element_text(size = 25, face = "bold", hjust = 0.5),
+    plot.title = element_blank(),
+    legend.position = "top",
+    legend.text = element_text(size = 16),
+    legend.title = element_blank(),
+    plot.margin = margin(t = 40, r = 20, b = 20, l = 20)
+  )
+
+ggsave("~/final_plots/fine_mapping/trans_cs_per_protein_barplot.png", p_trans, height = 8.33, width = 11.1)
+```
+
+TOPMed MESA Credible Set Count per Protein - UKB-PPP Replicates Only:
+```{r}
+library(data.table)
+library(dplyr)
+library(ggplot2)
+
+#CIS--------------------------------------
+mesa_meta <- fread("~/tensor_susie/all_race/0.05cis_finemap_ukb_replication.tsv", header=TRUE)
+mesa_euro <- fread("~/tensor_susie/euro_amer/0.05cis_finemap_ukb_replication.tsv", header=TRUE)
+mesa_afr <- fread("~/tensor_susie/afr_amer/0.05cis_finemap_ukb_replication.tsv", header=TRUE)
+mesa_hisp <- fread("~/tensor_susie/hisp_amer/0.05cis_finemap_ukb_replication.tsv", header=TRUE)
+mesa_chn <- fread("~/tensor_susie/chn_amer/0.05cis_finemap_ukb_replication.tsv", header=TRUE)
+
+#process each dataset to get the number of credible sets per gene_id
+process_data <- function(data, pop_name) {
+  unique_cs <- data %>%
+  filter(Pvalue < 0.05) %>% 
+  distinct(gene_id, cs_label, .keep_all = TRUE)
+  
+  protein_counts <- unique_cs %>%
+    group_by(gene_id) %>%
+    summarise(cs_count = n()) %>%
+    # Create a category for 6+ credible sets
+    mutate(
+      cs_category = ifelse(cs_count >= 6, "6+", as.character(cs_count)),
+      population = pop_name
+    )
+  
+  return(protein_counts)
+}
+
+#process all datasets
+all_pop <- process_data(mesa_meta, "ALL")
+euro_pop <- process_data(mesa_euro, "EUR")
+afr_pop <- process_data(mesa_afr, "AFR") 
+hisp_pop <- process_data(mesa_hisp, "HIS")
+chn_pop <- process_data(mesa_chn, "CHN")
+
+#combine all the data
+combined_data <- rbind(all_pop, euro_pop, afr_pop, hisp_pop, chn_pop)
+
+#set the population order (factor levels)
+combined_data$population <- factor(combined_data$population, 
+                                         levels = c("ALL", "EUR", "AFR", "HIS", "CHN"))
+
+#convert cs_category to factor with proper ordering
+combined_data$cs_category <- factor(combined_data$cs_category, 
+                                          levels = c("1", "2", "3", "4", "5", "6+"))
+
+#calculate the counts of each category in each population
+category_counts <- combined_data %>%
+  group_by(population, cs_category) %>%
+  summarise(count = n(), .groups = "drop")
+
+#bar plot
+p_cis_rep <- ggplot(category_counts, aes(x = cs_category, y = count, fill = population)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.7), width = 0.6) +
+  scale_fill_manual(values = c("ALL" = "red3", 
+                               "EUR" = "orange2", 
+                               "AFR" = "darkolivegreen3", 
+                               "HIS" = "plum3", 
+                               "CHN" = "lightblue3")) +
+  labs(title = "TensorQTL Cis Credible Set Count per Protein",
+       x = "Number of Credible Sets",
+       y = "Protein Count") +
+  theme_minimal() +
+  theme(
+    text = element_text(size = 14),
+    axis.title.x = element_text(size = 20, face = "bold", margin = margin(t = 15)),
+    axis.title.y = element_text(size = 20, face = "bold", margin = margin(r = 20)),
+    axis.text = element_text(size = 16, face = "bold"),
+    #plot.title = element_text(size = 25, face = "bold", hjust = 0.5),
+    plot.title = element_blank(),
+    legend.position = "none",
+    legend.text = element_text(size = 16),
+    legend.title = element_blank(),
+    plot.margin = margin(t = 40, r = 20, b = 20, l = 20)
+  )
+
+#ggsave("~/final_plots/fine_mapping/cis_cs_per_protein_barplot_ukb_replicated.png", p, height = 8.33, width = 11.1)
+
+#Trans--------------------------------------
+mesa_meta <- fread("~/tensor_susie/all_race/0.05trans_finemap_ukb_replication.tsv", header=TRUE)
+mesa_euro <- fread("~/tensor_susie/euro_amer/0.05trans_finemap_ukb_replication.tsv", header=TRUE)
+mesa_afr <- fread("~/tensor_susie/afr_amer/0.05trans_finemap_ukb_replication.tsv", header=TRUE)
+mesa_hisp <- fread("~/tensor_susie/hisp_amer/0.05trans_finemap_ukb_replication.tsv", header=TRUE)
+mesa_chn <- fread("~/tensor_susie/chn_amer/0.05trans_finemap_ukb_replication.tsv", header=TRUE)
+
+#process each dataset to get the number of credible sets per gene_id
+process_data <- function(data, pop_name) {
+  unique_cs <- data %>%
+    filter(Pvalue < 0.05) %>%
+    distinct(gene_id, cs_label, .keep_all = TRUE)
+  
+  protein_counts <- unique_cs %>%
+    group_by(gene_id) %>%
+    summarise(cs_count = n()) %>%
+    # Create a category for 6+ credible sets
+    mutate(
+      cs_category = ifelse(cs_count >= 6, "6+", as.character(cs_count)),
+      population = pop_name
+    )
+  
+  return(protein_counts)
+}
+
+#process all datasets
+all_pop <- process_data(mesa_meta, "ALL")
+euro_pop <- process_data(mesa_euro, "EUR")
+afr_pop <- process_data(mesa_afr, "AFR") 
+hisp_pop <- process_data(mesa_hisp, "HIS")
+chn_pop <- process_data(mesa_chn, "CHN")
+
+#combine all the data
+combined_data <- rbind(all_pop, euro_pop, afr_pop, hisp_pop, chn_pop)
+
+#set the population order (factor levels)
+combined_data$population <- factor(combined_data$population, 
+                                         levels = c("ALL", "EUR", "AFR", "HIS", "CHN"))
+
+#convert cs_category to factor with proper ordering
+combined_data$cs_category <- factor(combined_data$cs_category, 
+                                          levels = c("1", "2", "3", "4", "5", "6+"))
+
+#calculate the counts of each category in each population
+category_counts <- combined_data %>%
+  group_by(population, cs_category) %>%
+  summarise(count = n(), .groups = "drop")
+
+#bar plot
+p_trans_rep <- ggplot(category_counts, aes(x = cs_category, y = count, fill = population)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.7), width = 0.6) +
+  scale_fill_manual(values = c("ALL" = "red3", 
+                               "EUR" = "orange2", 
+                               "AFR" = "darkolivegreen3", 
+                               "HIS" = "plum3", 
+                               "CHN" = "lightblue3")) +
+  labs(title = "TensorQTL Trans Credible Set Count per Protein",
+       x = "Number of Credible Sets",
+       y = "Protein Count") +
+  theme_minimal() +
+  theme(
+    text = element_text(size = 14),
+    axis.title.x = element_text(size = 20, face = "bold", margin = margin(t = 15)),
+    axis.title.y = element_text(size = 20, face = "bold", margin = margin(r = 20)),
+    axis.text = element_text(size = 16, face = "bold"),
+    #plot.title = element_text(size = 25, face = "bold", hjust = 0.5),
+    plot.title = element_blank(),
+    legend.position = "none",
+    legend.text = element_text(size = 16),
+    legend.title = element_blank(),
+    plot.margin = margin(t = 40, r = 20, b = 20, l = 20)
+  )
+
+#ggsave("~/final_plots/fine_mapping/trans_cs_per_protein_barplot_ukb_replicated.png", p, height = 8.33, width = 11.1)
+```
+
+Credible Set Size Distribution:
+```{r}
+library(data.table)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(knitr)
+library(gridExtra)
+
+#function to load data files with proper error handling
+load_data <- function(file_path, data_type, ancestry) {
+  tryCatch({
+    data <- fread(file_path, header = TRUE)
+    data$data_type <- data_type
+    data$ancestry <- ancestry
+    return(data)
+  }, error = function(e) {
+    warning(paste("Error loading file:", file_path, "\nError:", e$message))
+    return(NULL)
+  })
+}
+
+#load trans data
+trans_all <- load_data("~/tensor_susie/all_race/0.05trans_finemap_edited.tsv", "trans", "All Ancestries")
+trans_euro <- load_data("~/tensor_susie/euro_amer/0.05trans_finemap_edited.tsv", "trans", "European")
+trans_afr <- load_data("~/tensor_susie/afr_amer/0.05trans_finemap_edited.tsv", "trans", "African")
+trans_hisp <- load_data("~/tensor_susie/hisp_amer/0.05trans_finemap_edited.tsv", "trans", "Hispanic")
+trans_chn <- load_data("~/tensor_susie/chn_amer/0.05trans_finemap_edited.tsv", "trans", "Chinese")
+
+#load cis data
+cis_all <- load_data("~/tensor_susie/all_race/0.05cis_finemap_dedup.tsv", "cis", "All Ancestries")
+cis_euro <- load_data("~/tensor_susie/euro_amer/0.05cis_finemap_dedup.tsv", "cis", "European")
+cis_afr <- load_data("~/tensor_susie/afr_amer/0.05cis_finemap_dedup.tsv", "cis", "African")
+cis_hisp <- load_data("~/tensor_susie/hisp_amer/0.05cis_finemap_dedup.tsv", "cis", "Hispanic")
+cis_chn <- load_data("~/tensor_susie/chn_amer/0.05cis_finemap_dedup.tsv", "cis", "Chinese")
+
+#combine all data
+all_data <- rbindlist(list(
+  trans_all, trans_euro, trans_afr, trans_hisp, trans_chn,
+  cis_all, cis_euro, cis_afr, cis_hisp, cis_chn
+), fill = TRUE, use.names = TRUE)
+
+all_data$af <- NULL
+
+#function to calculate credible set stats for each ancestry
+calc_cs_stats <- function(data) {
+  # Calculate CS size (number of variants per CS)
+  cs_size <- data %>%
+    group_by(ancestry, data_type, gene_id, cs_label) %>%
+    summarise(
+      cs_size = n(),
+      max_pip = max(pip, na.rm = TRUE),
+      avg_pip = mean(pip, na.rm = TRUE),
+      .groups = "drop"
+    )
+  
+  # Calculate averages per ancestry
+  ancestry_stats <- cs_size %>%
+    group_by(ancestry, data_type) %>%
+    summarise(
+      avg_cs_size = mean(cs_size, na.rm = TRUE),
+      avg_max_pip = mean(max_pip, na.rm = TRUE),
+      avg_mean_pip = mean(avg_pip, na.rm = TRUE),
+      median_cs_size = median(cs_size, na.rm = TRUE),
+      total_cs = n(),
+      .groups = "drop"
+    )
+  
+  return(list(
+    cs_size = cs_size,
+    ancestry_stats = ancestry_stats
+  ))
+}
+
+#calculate stats for all data
+cs_stats <- calc_cs_stats(all_data)
+cs_size_data <- cs_stats$cs_size
+ancestry_stats <- cs_stats$ancestry_stats
+
+#make sure ancestry is in consistent order
+ancestry_order <- c("All Ancestries", "European", "African", "Hispanic", "Chinese")
+ancestry_stats$ancestry <- factor(ancestry_stats$ancestry, levels = ancestry_order)
+
+#function to create box plot with abbreviated ancestry labels
+create_cs_size_boxplot <- function(data, filename) {
+  data_with_caps <- data %>%
+    mutate(data_type_cap = ifelse(data_type == "cis", "Cis", "Trans"))
+  
+  #create abbreviated ancestry names and ensure correct order
+  ancestry_mapping <- c(
+    "All Ancestries" = "ALL",
+    "European" = "EUR",
+    "African" = "AFR", 
+    "Hispanic" = "HIS",
+    "Chinese" = "CHN"
+  )
+  
+  #ensure ancestry is in the original order
+  ancestry_order <- c("All Ancestries", "European", "African", "Hispanic", "Chinese")
+  data_with_caps$ancestry <- factor(data_with_caps$ancestry, levels = ancestry_order)
+  
+  #create the box plot with abbreviated ancestry labels
+  p <- ggplot(data_with_caps, aes(x = ancestry, y = cs_size, fill = ancestry)) +
+    geom_boxplot(width = 0.7, outlier.size = 1, outlier.alpha = 0.5) +
+    #add mean points as diamonds
+    stat_summary(fun = mean, geom = "point", shape = 23, size = 5, 
+                 fill = "white", color = "black") +
+    #add mean labels with background shade
+    stat_summary(
+      fun = mean,
+      geom = "label",
+      aes(label = sprintf("%.2f", after_stat(y))),
+      vjust = -1.8, 
+      size = 4, 
+      fontface = "bold",
+      fill = "white",
+      label.padding = unit(0.2, "lines"),
+      label.size = 0.5,
+      color = "black"
+    ) +
+    facet_wrap(~ data_type_cap, scales = "free_x") +
+    scale_fill_manual(values = c(
+      "All Ancestries" = "red3", 
+      "European" = "orange2", 
+      "African" = "darkolivegreen3", 
+      "Hispanic" = "plum3", 
+      "Chinese" = "lightblue3"
+    )) +
+    #abbreviated ancestry names for the x-axis
+    scale_x_discrete(labels = ancestry_mapping) +
+    coord_cartesian(ylim = c(1, 20)) +
+    scale_y_continuous(breaks = c(1, 5, 10, 15, 20)) +
+    labs(
+      title = "Credible Set Size Distribution by Ancestry",
+      x = "",
+      y = "Credible Set Size (# variants)"
+    ) +
+    theme_minimal() +
+    theme(
+      text = element_text(size = 12),
+      axis.title = element_text(size = 14, face = "bold"),
+      axis.text.x = element_text(size = 12, angle = 0, hjust = 0.5, face = "bold"),
+      axis.text.y = element_text(size = 10, face = "bold"),
+      #plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+      plot.title = element_blank(),
+      legend.position = "none",
+      strip.text = element_text(size = 14, face = "bold"),
+      plot.margin = margin(t = 20, r = 20, b = 20, l = 20)
+    )
+  
+  ggsave(filename, plot = p, width = 10, height = 6, dpi = 1000)
+}
+
+#generate box plot with abbreviated ancestry labels
+create_cs_size_boxplot(
+  cs_size_data,
+  "~/final_plots/fine_mapping/tensor_cs_size_boxplot_zoomed.png"
+)
+```
+
+Causal PIP Count:
+```{r}
+library(dplyr)
+library(data.table)
+library(ggplot2)
+
+#function to load data files with proper error handling
+load_data <- function(file_path, data_type, ancestry) {
+  tryCatch({
+    data <- fread(file_path, header = TRUE)
+    data$data_type <- data_type
+    data$ancestry  <- ancestry
+
+    return(data)
+  }, error = function(e) {
+    warning(paste("Error loading file:", file_path, "\nError:", e$message))
+    return(NULL)
+  })
+}
+
+#read cis data
+cis_all <- load_data("~/tensor_susie/all_race/0.05cis_finemap_dedup.tsv", "cis", "All Ancestries")
+cis_euro <- load_data("~/tensor_susie/euro_amer/0.05cis_finemap_dedup.tsv", "cis", "European")
+cis_afr <- load_data("~/tensor_susie/afr_amer/0.05cis_finemap_dedup.tsv", "cis", "African")
+cis_hisp <- load_data("~/tensor_susie/hisp_amer/0.05cis_finemap_dedup.tsv", "cis", "Hispanic")
+cis_chn <- load_data("~/tensor_susie/chn_amer/0.05cis_finemap_dedup.tsv", "cis", "Chinese")
+
+#extract cis tensor data
+all_tensor_cis <- cis_all %>% rename(phenotype_id=gene_id, SNP=variant_id, tensor_CS=cs_label, tensor_PIP=pip)
+euro_tensor_cis <- cis_euro %>% rename(phenotype_id=gene_id, SNP=variant_id, tensor_CS=cs_label, tensor_PIP=pip)
+afr_tensor_cis <- cis_afr %>% rename(phenotype_id=gene_id, SNP=variant_id, tensor_CS=cs_label, tensor_PIP=pip)
+chn_tensor_cis <- cis_chn %>% rename(phenotype_id=gene_id, SNP=variant_id, tensor_CS=cs_label, tensor_PIP=pip)
+hisp_tensor_cis <- cis_hisp %>% rename(phenotype_id=gene_id, SNP=variant_id, tensor_CS=cs_label, tensor_PIP=pip)
+
+#filter for high-confidence variants (PIP >= 0.9) - CIS
+all_tensor_cis_causal <- all_tensor_cis %>% 
+  filter(tensor_PIP >= 0.9, !is.na(tensor_PIP)) %>% 
+  group_by(phenotype_id, SNP) %>%
+  summarise(
+    tensor_CS = max(tensor_CS, na.rm = TRUE),
+    tensor_PIP = max(tensor_PIP, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  distinct(phenotype_id, SNP, .keep_all = TRUE) %>%
+  mutate(population = "All Ancestries")
+
+euro_tensor_cis_causal <- euro_tensor_cis %>% 
+  filter(tensor_PIP >= 0.9, !is.na(tensor_PIP)) %>%
+  group_by(phenotype_id, SNP) %>%
+  summarise(
+    tensor_CS = max(tensor_CS, na.rm = TRUE),
+    tensor_PIP = max(tensor_PIP, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  distinct(phenotype_id, SNP, .keep_all = TRUE) %>%
+  mutate(population = "European")
+
+afr_tensor_cis_causal <- afr_tensor_cis %>% 
+  filter(tensor_PIP >= 0.9, !is.na(tensor_PIP)) %>%
+  group_by(phenotype_id, SNP) %>%
+  summarise(
+    tensor_CS = max(tensor_CS, na.rm = TRUE),
+    tensor_PIP = max(tensor_PIP, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  distinct(phenotype_id, SNP, .keep_all = TRUE) %>%
+  mutate(population = "African")
+
+chn_tensor_cis_causal <- chn_tensor_cis %>% 
+  filter(tensor_PIP >= 0.9, !is.na(tensor_PIP)) %>%
+  group_by(phenotype_id, SNP) %>%
+  summarise(
+    tensor_CS = max(tensor_CS, na.rm = TRUE),
+    tensor_PIP = max(tensor_PIP, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  distinct(phenotype_id, SNP, .keep_all = TRUE) %>%
+  mutate(population = "Chinese")
+
+hisp_tensor_cis_causal <- hisp_tensor_cis %>% 
+  filter(tensor_PIP >= 0.9, !is.na(tensor_PIP)) %>%
+  group_by(phenotype_id, SNP) %>%
+  summarise(
+    tensor_CS = max(tensor_CS, na.rm = TRUE),
+    tensor_PIP = max(tensor_PIP, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  distinct(phenotype_id, SNP, .keep_all = TRUE) %>%
+  mutate(population = "Hispanic")
+
+#combine all data
+combined_data <- rbind(
+  all_tensor_cis_causal %>% select(population),
+  euro_tensor_cis_causal %>% select(population),
+  afr_tensor_cis_causal %>% select(population),
+  chn_tensor_cis_causal %>% select(population),
+  hisp_tensor_cis_causal %>% select(population)
+)
+
+#count high-confidence variants by population
+count_data <- combined_data %>%
+  group_by(population) %>%
+  summarise(count = n(), .groups = 'drop')
+
+#set factor levels for proper ordering
+count_data$population <- factor(count_data$population, 
+                                levels = c("All Ancestries", "European", "African", "Hispanic", "Chinese"))
+
+#add population sizes
+pop_sizes <- data.frame(
+  population = factor(c("All Ancestries", "European", "African", "Hispanic", "Chinese"),
+                      levels = c("All Ancestries", "European", "African", "Hispanic", "Chinese")),
+  n = c(2953, 1270, 675, 642, 366)
+)
+
+count_data <- count_data %>%
+  left_join(pop_sizes, by = "population")
+
+p <- ggplot(count_data, aes(x = population, y = count, fill = population)) +
+  geom_bar(stat = "identity", alpha = 0.9) +
+  geom_text(aes(label = count), vjust = -0.5, size = 5.5, fontface = "bold") +
+  labs(
+    title = "Number of Likely Cis Causal Variants (PIP ≥ 0.9) by Ancestry",
+    x = "Ancestry",
+    y = "Number of Variants with PIP ≥ 0.9"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(size = 14, face = "bold"),
+    axis.ticks.x = element_blank(),
+    axis.text.y = element_text(size = 14, face = "bold"),
+    axis.title = element_text(size = 16, face = "bold"),
+    #plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+    plot.title = element_blank(),
+    legend.position = "none"
+  ) +
+  scale_fill_manual(values = c(
+    "All Ancestries" = "red3",
+    "European" = "orange2",
+    "African" = "darkolivegreen3",
+    "Hispanic" = "plum3",
+    "Chinese" = "lightblue3"
+  )) +
+  coord_cartesian(ylim=c(0,1600)) + 
+  scale_y_continuous(breaks = c(0, 500, 1000, 1500),
+                     labels = c("0", "500", "1000", "1500"))
+
+ggsave("~/final_plots/fine_mapping/tensor_cis_causal_pip_count.png", p, width = 10, height = 6)
+
+#Trans--------------------------------------
+#read trans data
+trans_all <- load_data("~/tensor_susie/all_race/0.05trans_finemap_edited.tsv", "trans", "All Ancestries")
+trans_euro <- load_data("~/tensor_susie/euro_amer/0.05trans_finemap_edited.tsv", "trans", "European")
+trans_afr <- load_data("~/tensor_susie/afr_amer/0.05trans_finemap_edited.tsv", "trans", "African")
+trans_hisp <- load_data("~/tensor_susie/hisp_amer/0.05trans_finemap_edited.tsv", "trans", "Hispanic")
+trans_chn <- load_data("~/tensor_susie/chn_amer/0.05trans_finemap_edited.tsv", "trans", "Chinese")
+
+#extract trans tensor data
+all_tensor_trans <- trans_all %>% rename(phenotype_id=gene_id, SNP=variant_id, tensor_CS=cs_label, tensor_PIP=pip)
+euro_tensor_trans <- trans_euro %>% rename(phenotype_id=gene_id, SNP=variant_id, tensor_CS=cs_label, tensor_PIP=pip)
+afr_tensor_trans <- trans_afr %>% rename(phenotype_id=gene_id, SNP=variant_id, tensor_CS=cs_label, tensor_PIP=pip)
+chn_tensor_trans <- trans_chn %>% rename(phenotype_id=gene_id, SNP=variant_id, tensor_CS=cs_label, tensor_PIP=pip)
+hisp_tensor_trans <- trans_hisp %>% rename(phenotype_id=gene_id, SNP=variant_id, tensor_CS=cs_label, tensor_PIP=pip)
+
+#filter for high-confidence variants (PIP >= 0.9) - trans
+all_tensor_trans_causal <- all_tensor_trans %>% 
+  filter(tensor_PIP >= 0.9, !is.na(tensor_PIP)) %>% 
+  group_by(phenotype_id, SNP) %>%
+  summarise(
+    tensor_CS = max(tensor_CS, na.rm = TRUE),
+    tensor_PIP = max(tensor_PIP, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  distinct(phenotype_id, SNP, .keep_all = TRUE) %>%
+  mutate(population = "All Ancestries")
+
+euro_tensor_trans_causal <- euro_tensor_trans %>% 
+  filter(tensor_PIP >= 0.9, !is.na(tensor_PIP)) %>%
+  group_by(phenotype_id, SNP) %>%
+  summarise(
+    tensor_CS = max(tensor_CS, na.rm = TRUE),
+    tensor_PIP = max(tensor_PIP, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  distinct(phenotype_id, SNP, .keep_all = TRUE) %>%
+  mutate(population = "European")
+
+afr_tensor_trans_causal <- afr_tensor_trans %>% 
+  filter(tensor_PIP >= 0.9, !is.na(tensor_PIP)) %>%
+  group_by(phenotype_id, SNP) %>%
+  summarise(
+    tensor_CS = max(tensor_CS, na.rm = TRUE),
+    tensor_PIP = max(tensor_PIP, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  distinct(phenotype_id, SNP, .keep_all = TRUE) %>%
+  mutate(population = "African")
+
+chn_tensor_trans_causal <- chn_tensor_trans %>% 
+  filter(tensor_PIP >= 0.9, !is.na(tensor_PIP)) %>%
+  group_by(phenotype_id, SNP) %>%
+  summarise(
+    tensor_CS = max(tensor_CS, na.rm = TRUE),
+    tensor_PIP = max(tensor_PIP, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  distinct(phenotype_id, SNP, .keep_all = TRUE) %>%
+  mutate(population = "Chinese")
+
+hisp_tensor_trans_causal <- hisp_tensor_trans %>% 
+  filter(tensor_PIP >= 0.9, !is.na(tensor_PIP)) %>%
+  group_by(phenotype_id, SNP) %>%
+  summarise(
+    tensor_CS = max(tensor_CS, na.rm = TRUE),
+    tensor_PIP = max(tensor_PIP, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  distinct(phenotype_id, SNP, .keep_all = TRUE) %>%
+  mutate(population = "Hispanic")
+
+#combine all data
+combined_data <- rbind(
+  all_tensor_trans_causal %>% select(population),
+  euro_tensor_trans_causal %>% select(population),
+  afr_tensor_trans_causal %>% select(population),
+  chn_tensor_trans_causal %>% select(population),
+  hisp_tensor_trans_causal %>% select(population)
+)
+
+#count high-confidence variants by population
+count_data <- combined_data %>%
+  group_by(population) %>%
+  summarise(count = n(), .groups = 'drop')
+
+#set factor levels for proper ordering
+count_data$population <- factor(count_data$population, 
+                                levels = c("All Ancestries", "European", "African", "Hispanic", "Chinese"))
+
+#add population sizes
+pop_sizes <- data.frame(
+  population = factor(c("All Ancestries", "European", "African", "Hispanic", "Chinese"),
+                      levels = c("All Ancestries", "European", "African", "Hispanic", "Chinese")),
+  n = c(2953, 1270, 675, 642, 366)
+)
+
+count_data <- count_data %>%
+  left_join(pop_sizes, by = "population")
+
+#no population n= labels:
+p <- ggplot(count_data, aes(x = population, y = count, fill = population)) +
+  geom_bar(stat = "identity", alpha = 0.9) +
+  geom_text(aes(label = count), vjust = -0.5, size = 5.5, fontface = "bold") +
+  labs(
+    title = "Number of Likely Trans Causal Variants (PIP ≥ 0.9) by Ancestry",
+    x = "Ancestry",
+    y = "Number of Variants with PIP ≥ 0.9"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(size = 14, face = "bold"),
+    axis.ticks.x = element_blank(),
+    axis.text.y = element_text(size = 14, face = "bold"),
+    axis.title = element_text(size = 16, face = "bold"),
+    #plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+    plot.title = element_blank(),
+    legend.position = "none"
+  ) +
+  scale_fill_manual(values = c(
+    "All Ancestries" = "red3",
+    "European" = "orange2",
+    "African" = "darkolivegreen3",
+    "Hispanic" = "plum3",
+    "Chinese" = "lightblue3"
+  )) +
+  coord_cartesian(ylim=c(0,16000)) + 
+  scale_y_continuous(breaks = c(0, 5000, 10000, 15000),
+                     labels = c("0", "5000", "10000", "15000"))
+
+ggsave("~/final_plots/fine_mapping/tensor_trans_causal_pip_count.png", p, width = 10, height = 6)
+
+pop_order <- c("All Ancestries", "European", "African", "Hispanic", "Chinese")
+
+count_data <- combined_data %>%
+  group_by(population) %>%
+  summarise(count = n(), .groups = "drop")
+```
+
+Cross-model Credible Set Size, Maximum PIP/Protein, and Likely Causal SNP Distribution:
+```{r}
+library(data.table)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+
+#load your cis data file
+data <- fread("~/compare_susie/meta_cis_tensor_vs_susier_vs_sushie_vs_multi_vs_susiex.tsv", header = TRUE)
+input_oids <- fread("~/tensor_susie/all_race/0.05cis_locations.tsv") %>%
+  select(phenotype_id)
+
+#filter for 1534 proteins with pQTLs FDR < 0.05
+all_data <- data %>%
+  filter(phenotype_id %in% input_oids$phenotype_id)
+
+#function to reshape data from wide to long format for the four models
+prepare_Model_data <- function(data) {
+  tensor_data <- data %>%
+    filter(!is.na(tensor_CS) & !is.na(tensor_PIP)) %>%
+    group_by(phenotype_id, SNP) %>%
+    summarise(
+      CS = max(tensor_CS, na.rm = TRUE),
+      PIP = max(tensor_PIP, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    distinct(phenotype_id, SNP, .keep_all = TRUE) %>%
+    mutate(Model = "TensorQTL")
+  
+  sushie_data <- data %>%
+    filter(!is.na(sushie_CS) & !is.na(sushie_PIP)) %>%
+    group_by(phenotype_id, SNP) %>%
+    summarise(
+      CS = max(sushie_CS, na.rm = TRUE),
+      PIP = max(sushie_PIP, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    distinct(phenotype_id, SNP, .keep_all = TRUE) %>%
+    mutate(Model = "SuShiE")
+  
+  multi_data <- data %>%
+    filter(!is.na(multi_CS) & !is.na(multi_PIP)) %>%
+    group_by(phenotype_id, SNP) %>%
+    summarise(
+      CS = max(multi_CS, na.rm = TRUE),
+      PIP = max(multi_PIP, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    distinct(phenotype_id, SNP, .keep_all = TRUE) %>%
+    mutate(Model = "MultiSuSiE")
+  
+  susiex_data <- data %>%
+    filter(!is.na(susieX_CS) & !is.na(susieX_PIP)) %>%
+    group_by(phenotype_id, SNP) %>%
+    summarise(
+      CS = max(susieX_CS, na.rm = TRUE),
+      PIP = max(susieX_PIP, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    distinct(phenotype_id, SNP, .keep_all = TRUE) %>%
+    mutate(Model = "SuSiEx")
+  
+  long_data <- rbindlist(list(tensor_data, sushie_data, multi_data, susiex_data), 
+                         fill = TRUE, use.names = TRUE)
+  
+  return(long_data)
+}
+
+#prepare long format data
+long_data <- prepare_Model_data(all_data)
+
+#calculate CS size data
+cs_size_data <- long_data %>%
+  group_by(Model, phenotype_id, CS) %>%
+  summarise(
+    cs_size = n(),
+    max_pip = max(PIP, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+#calculate high PIP variants (PIP >= 0.9)
+high_pip_counts <- long_data %>%
+  filter(PIP >= 0.9) %>%
+  group_by(Model) %>%
+  summarise(count = n(), .groups = "drop")
+
+#set model order
+Model_order <- c("TensorQTL", "SuShiE", "MultiSuSiE", "SuSiEx")
+cs_size_data$Model <- factor(cs_size_data$Model, levels = Model_order)
+high_pip_counts$Model <- factor(high_pip_counts$Model, levels = Model_order)
+
+#color scheme
+Model_colors <- c("TensorQTL" = "indianred3", 
+                   "SuShiE" = "deepskyblue3",
+                   "MultiSuSiE" = "aquamarine3",
+                   "SuSiEx" = "violetred3")
+
+#calculate means for labeling
+cs_means <- cs_size_data %>%
+  group_by(Model) %>%
+  summarise(mean_val = mean(cs_size, na.rm = TRUE), .groups = "drop")
+
+pip_means <- cs_size_data %>%
+  group_by(Model) %>%
+  summarise(mean_val = mean(max_pip, na.rm = TRUE), .groups = "drop")
+
+#credible set size distribution
+p1 <- ggplot(cs_size_data, aes(x = Model, y = cs_size, fill = Model)) +
+  geom_violin(trim = FALSE, alpha = 0.7) +
+  geom_boxplot(width = 0.1, alpha = 0.8, outlier.size = 0.5) +
+  stat_summary(fun = mean, geom = "point", shape = 23, size = 4, 
+               fill = "white", color = "black") +
+  geom_text(data = cs_means, 
+            aes(x = Model, y = mean_val, label = sprintf("%.3f", mean_val)),
+            hjust = -0.3,
+            size = 5, 
+            fontface = "bold",
+            color = "black") +
+  scale_fill_manual(values = Model_colors) +
+  coord_cartesian(ylim = c(0, 30)) +
+  labs(
+    title = "Credible Set Size Distribution by Model",
+    x = "Model",
+    y = "Credible Set Size (# variants)"
+  ) +
+  theme_minimal() +
+  theme(
+    text = element_text(size = 14),
+    axis.title = element_text(size = 16, face = "bold"),
+    axis.text.x = element_text(size = 16, angle = 0, hjust = 0.5, face = "bold"),
+    axis.text.y = element_text(size = 12, face = "bold"),
+    plot.title = element_blank(),
+    legend.position = "none",
+    plot.margin = margin(t = 20, r = 40, b = 20, l = 20)
+  )
+
+ggsave("~/final_plots/fine_mapping/benchmarks/cs_size_dist.png", plot = p1, width = 10, height = 7, dpi = 1000)
+
+#maximum pip per protein
+max_pip_per_protein <- long_data %>%
+  group_by(Model, phenotype_id) %>%
+  summarise(
+    max_pip = max(PIP, na.rm = TRUE),
+    .groups = "drop"
+  )
+pip_means <- max_pip_per_protein %>%
+  group_by(Model) %>%
+  summarise(mean_val = mean(max_pip, na.rm = TRUE), .groups = "drop")
+max_pip_per_protein$Model <- factor(max_pip_per_protein$Model, levels = Model_order)
+
+p2 <- ggplot(max_pip_per_protein, aes(x = Model, y = max_pip, fill = Model)) +
+  geom_violin(trim = FALSE, alpha = 0.7) +
+  geom_boxplot(width = 0.1, alpha = 0.8, outlier.size = 0.5) +
+  stat_summary(fun = mean, geom = "point", shape = 23, size = 4, 
+               fill = "white", color = "black") +
+  geom_text(data = pip_means, 
+            aes(x = Model, y = mean_val, label = sprintf("%.3f", mean_val)),
+            hjust = -0.3,
+            size = 5, 
+            fontface = "bold",
+            color = "black") +
+  scale_fill_manual(values = Model_colors) +
+  coord_cartesian(ylim = c(0, 1)) +
+  labs(
+    title = "Maximum PIP Distribution by Model",
+    x = "Model",
+    y = "Maximum PIP per Protein"
+  ) +
+  theme_minimal() +
+  theme(
+    text = element_text(size = 14),
+    axis.title = element_text(size = 16, face = "bold"),
+    axis.text.x = element_text(size = 16, angle = 0, hjust = 0.5, face = "bold"),
+    axis.text.y = element_text(size = 12, face = "bold"),
+    #plot.title = element_text(size = 18, face = "bold", hjust = 0.5),
+    plot.title = element_blank(),
+    legend.position = "none",
+    plot.margin = margin(t = 20, r = 40, b = 20, l = 20)
+  )
+
+ggsave("~/final_plots/fine_mapping/benchmarks/max_pip_violin_with_means.png", plot = p2, width = 10, height = 7, dpi = 1000)
+
+#causal variant count
+p3 <- ggplot(high_pip_counts, aes(x = Model, y = count, fill = Model)) +
+  geom_bar(stat = "identity", width = 0.7) +
+  geom_text(aes(label = count), vjust = -0.5, size = 6, fontface = "bold") +
+  scale_fill_manual(values = Model_colors) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.1))) +
+  labs(
+    title = "Number of Likely Causal Variants (PIP ≥ 0.9)",
+    x = "Model",
+    y = "Number of Variants with PIP ≥ 0.9"
+  ) +
+  theme_minimal() +
+  theme(
+    text = element_text(size = 14),
+    axis.title = element_text(size = 16, face = "bold"),
+    axis.text.x = element_text(size = 14, angle = 0, hjust = 0.5, face = "bold"),
+    axis.text.y = element_text(size = 16, face = "bold"),
+    #plot.title = element_text(size = 18, face = "bold", hjust = 0.5),
+    plot.title = element_blank(),
+    legend.position = "none",
+    plot.margin = margin(t = 20, r = 20, b = 20, l = 20)
+  )
+
+ggsave("~/final_plots/fine_mapping/benchmarks/high_pip_variants_barplot.png", plot = p3, width = 10, height = 7, dpi = 1000)
+```
+
+Cross-Model Correlation:
+```{r}
+library(ggplot2)
+
+#create full matrix
+models <- c("TensorQTL SuSiE", "SuSiE-R", "SuShiE", "MultiSuSiE", "SuSiEx")
+model_types <- c("Single", "Single", "Multi", "Multi", "Multi")
+
+corr_matrix <- matrix(c(
+  1.00, 0.993, 0.712, 0.736, 0.504,
+  0.993, 1.00, 0.720, 0.741, 0.507,
+  0.712, 0.720, 1.00, 0.873, 0.404,
+  0.736, 0.741, 0.873, 1.00, 0.437,
+  0.504, 0.507, 0.404, 0.437, 1.00
+), nrow = 5, byrow = TRUE)
+
+#create data frame with lower triangle excluding diagonal
+finemapping_corr_data <- data.frame()
+for (i in 1:length(models)) {
+  for (j in 1:i) {
+    # Skip diagonal (i == j)
+    if (i != j) {
+      finemapping_corr_data <- rbind(finemapping_corr_data, 
+                                     data.frame(
+                                       model_x = models[j],
+                                       model_y = models[i],
+                                       type_x = model_types[j],
+                                       type_y = model_types[i],
+                                       correlation = corr_matrix[i, j]
+                                     ))
+    }
+  }
+}
+
+#set factor levels - keep x normal, reverse y
+finemapping_corr_data$model_x <- factor(finemapping_corr_data$model_x, levels = models)
+finemapping_corr_data$model_y <- factor(finemapping_corr_data$model_y, levels = rev(models))
+
+#define colors for model types
+model_colors_x <- c("TensorQTL SuSiE" = "deeppink4", 
+                    "SuSiE-R" = "deeppink4",
+                    "SuShiE" = "aquamarine4", 
+                    "MultiSuSiE" = "aquamarine4", 
+                    "SuSiEx" = "aquamarine4")
+
+model_colors_y <- c("TensorQTL SuSiE" = "deeppink4", 
+                    "SuSiE-R" = "deeppink4",
+                    "SuShiE" = "aquamarine4", 
+                    "MultiSuSiE" = "aquamarine4", 
+                    "SuSiEx" = "aquamarine4")
+
+#create custom labels - blank for first and last
+x_labels <- c("TensorQTL SuSiE", "SusieR", "SuShiE", "MultiSuSiE", "")
+y_labels <- c("SuSiEx", "MultiSuSiE", "SuShiE", "SusieR", "")
+
+#create the heatmap
+f <- ggplot(finemapping_corr_data, aes(x = model_x, y = model_y, fill = correlation)) +
+  geom_tile(color = "white", linewidth = 2) +
+  geom_text(aes(label = sprintf("%.3f", correlation)), size = 6.5, fontface = "bold", color = "black") +
+  scale_fill_gradient2(
+    low = "#8ec1da",
+    mid = "#ededed", 
+    high = "#d47264",
+    midpoint = 0.65,
+    limits = c(0.35, 1),
+    name = "Correlation",
+    breaks = seq(0.4, 1, 0.1)
+  ) +
+  scale_x_discrete(drop = FALSE, position = "bottom", labels = x_labels) +
+  scale_y_discrete(drop = FALSE, labels = y_labels) +
+  labs(
+    title = NULL,
+    x = NULL,
+    y = NULL
+  ) +
+  theme_minimal() +
+  theme(
+    text = element_text(size = 18),
+    axis.text.x.bottom = element_text(size = 18, face = "bold", angle = 45, hjust = 1, 
+                                      color = model_colors_x),
+    axis.text.y = element_text(size = 18, face = "bold", 
+                               color = rev(model_colors_y)),
+    plot.title = element_text(size = 22, face = "bold", hjust = 0.5, margin = margin(b = 10)),
+    plot.subtitle = element_text(size = 16, hjust = 0.5, margin = margin(b = 15)),
+    legend.position = "right",
+    legend.title = element_blank(),
+    legend.text = element_text(size = 14),
+    legend.key.height = unit(1.5, "cm"),
+    legend.key.width = unit(0.8, "cm"),
+    panel.grid = element_blank(),
+    panel.border = element_blank(),
+    #plot.margin = margin(t = -70, r = 40, b = 10, l = 10),
+    legend.margin = margin(0, 0, 0, -100),
+    legend.box.spacing = unit(0, "cm"),
+    axis.ticks = element_blank()
+  )
+
+ggsave("~/final_plots/fine_mapping/benchmarks/max_pip_per_protein_correlations_matrix_plot_spearman.png", 
+       plot = f, width = 10, height = 7, dpi = 1000)
+```
+
+Cross-model Precision, Sensitivity, and F1:
+```{r}
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+library(ggtext)
+library(glue)
+
+model_levels_raw    <- c("SuSiER", "SuShiE", "MultiSuSiE", "SuSiEx")
+model_levels_labels <- c("SusieR", "SuShiE", "MultiSuSiE", "SuSiEx")
+
+f1 <- data.frame(
+  MESA       = c("SuSiER", "SuShiE", "MultiSuSiE", "SuSiEx"),
+  SuSiER     = c(0.114, 0.101, 0.119, 0.068),
+  SuShiE     = c(0.105, 0.111, 0.112, 0.064),
+  MultiSuSiE = c(0.113, 0.105, 0.125, 0.073),
+  SuSiEx     = c(0.168, 0.143, 0.163, 0.126)
+)
+
+sensitivity <- data.frame(
+  MESA       = c("SuSiER", "SuShiE", "MultiSuSiE", "SuSiEx"),
+  SuSiER     = c(0.096, 0.098, 0.119, 0.042),
+  SuShiE     = c(0.082, 0.099, 0.101, 0.038),
+  MultiSuSiE = c(0.089, 0.094, 0.115, 0.044),
+  SuSiEx     = c(0.185, 0.185, 0.219, 0.090)
+)
+
+precision <- data.frame(
+  MESA       = c("SuSiER", "SuShiE", "MultiSuSiE", "SuSiEx"),
+  SuSiER     = c(0.140, 0.105, 0.119, 0.170),
+  SuShiE     = c(0.146, 0.126, 0.125, 0.192),
+  MultiSuSiE = c(0.154, 0.119, 0.137, 0.213),
+  SuSiEx     = c(0.153, 0.116, 0.130, 0.212)
+)
+
+make_long <- function(df, value_name) {
+  df %>%
+    pivot_longer(-MESA, names_to = "UKB", values_to = value_name) %>%
+    mutate(
+      MESA = factor(MESA, levels = rev(model_levels_raw), labels = rev(model_levels_labels)),
+      UKB  = factor(UKB,  levels = model_levels_raw,      labels = model_levels_labels)
+    )
+}
+
+f1_long          <- make_long(f1,          "F1")
+sensitivity_long <- make_long(sensitivity, "Sensitivity")
+precision_long   <- make_long(precision,   "Precision")
+
+method_colors <- c(
+  "SusieR"    = "deeppink4",
+  "SuShiE"     = "aquamarine4",
+  "MultiSuSiE" = "aquamarine4",
+  "SuSiEx"     = "aquamarine4"
+)
+
+make_label <- function(name) {
+  color <- method_colors[name]
+  glue("<span style='color:{color}'><b>{name}</b></span>")
+}
+
+x_labels <- setNames(sapply(model_levels_labels, make_label), model_levels_labels)
+y_labels <- setNames(sapply(rev(model_levels_labels), make_label), rev(model_levels_labels))
+
+heatmap_theme <- theme_bw() +
+  theme(
+    axis.ticks = element_blank(),
+    axis.text.x = element_markdown(size = 18, margin = margin(b = 15)),
+    axis.text.y = element_markdown(size = 18, angle = 90, vjust = 0.5, hjust = 0.5, margin = margin(l = 15)),
+    axis.title = element_text(size = 20, face = "bold"),
+    #plot.title = element_text(size = 22, face = "bold", hjust = 0.5),
+    plot.title = element_blank(),
+    legend.title = element_text(face = "bold", size = 18),
+    legend.text = element_text(size = 14),
+    legend.key.height = unit(1.5, "cm"),
+    legend.key.width = unit(0.8, "cm"),
+    panel.grid = element_blank()
+  )
+
+make_heatmap <- function(long_data, value_col, title, legend_name) {
+  diag_data <- long_data %>% filter(as.character(MESA) == as.character(UKB))
+  
+  ggplot(long_data, aes(x = UKB, y = MESA, fill = .data[[value_col]])) +
+    geom_tile(color = "white", linewidth = 0.8) +
+    geom_tile(data = diag_data,
+              aes(x = UKB, y = MESA),
+              fill = NA, color = "black", linewidth = 1.5) +
+    geom_text(aes(label = round(.data[[value_col]], 3)),
+              size = 7, fontface = "bold") +
+    scale_fill_gradient2(
+      low      = "#8ec1da",
+      mid      = "#ededed",
+      high     = "#d47264",
+      midpoint = median(long_data[[value_col]]),
+      limits   = c(min(long_data[[value_col]]), max(long_data[[value_col]])),
+      name     = legend_name
+    ) +
+    scale_x_discrete(labels = x_labels) +
+    scale_y_discrete(labels = y_labels) +
+    labs(title = title, x = "UKB Model", y = "MESA Model") +
+    heatmap_theme
+}
+
+p_f1 <- make_heatmap(f1_long, "F1", "F1 Scores", "F1 Score")
+ggsave("~/final_plots/fine_mapping/benchmarks/ukb_replication_f1_heatmap.png",
+       plot = p_f1, width = 13, height = 11, dpi = 1000)
+
+p_sensitivity <- make_heatmap(sensitivity_long, "Sensitivity", "Recall", "Recall")
+ggsave("~/final_plots/fine_mapping/benchmarks/ukb_replication_sensitivity_heatmap.png",
+       plot = p_sensitivity, width = 13, height = 11, dpi = 1000)
+
+p_precision <- make_heatmap(precision_long, "Precision", "Precision", "Precision")
+ggsave("~/final_plots/fine_mapping/benchmarks/ukb_replication_precision_heatmap.png",
+       plot = p_precision, width = 13, height = 11, dpi = 1000)
+```
+
+```{r}
+library(gridExtra)
+library(cowplot)
+
+tiff("~/final_plots/thesis_figure_8.tiff", width = 26, height = 22, units = 'in', res = 800, compression = 'lzw')
+plot_grid(p_precision, p_sensitivity, p_f1, nrow = 2, labels = c("a.", "b.", "c."), label_size = 42)
+dev.off()
+```
+
+Colocalization TOPMed MESA Locus Visualization:
+```{r}
+library(dplyr)
+library(data.table)
+library(ggplot2)
+
+populations <- c("META", "EUR", "AFR", "AMR")
+
+for (pop in populations) {
+  
+  in_path <- paste0("~/mesa_pwas_coloc/mesa_txt_files/OID20771_CHRDL1_EM_239_", pop, "_mesa_coloc.txt")
+  plot_path <- paste0("~/final_plots/colocalization/OID20771_", pop, "_mesa_locuszoom.png")
+  
+  coloc_results <- fread(in_path) %>%
+    mutate(
+      ld_category = cut(ld,
+                        breaks = c(0, 0.2, 0.4, 0.6, 0.8, 1.0),
+                        labels = c("0-0.2", "0.2-0.4", "0.4-0.6", "0.6-0.8", "0.8-1.0"),
+                        include.lowest = TRUE)
+    ) %>%
+    arrange(is.na(ld_category), ld) %>%
+    arrange(desc(is.na(ld)))
+  
+  top_snp <- coloc_results %>% filter(variant_id == "X:110548741:C:A")
+  
+  p <- ggplot(coloc_results, aes(x = position, y = log_pval_nominal)) +
+    geom_point(aes(fill = ld_category), color = "black", shape = 21, size = 2.5, stroke = 0.2, alpha = 0.8) +
+    scale_fill_manual(
+      values = c("0-0.2" = "royalblue3", "0.2-0.4" = "lightblue2", "0.4-0.6" = "springgreen3",
+                 "0.6-0.8" = "orange1", "0.8-1.0" = "red2"),
+      name = expression(r^2)
+    ) +
+    scale_color_identity() +
+    labs(
+      x = "Chromosome 23 SNP Position",
+      y = paste0("TOPMed MESA CHRDL1 cis-pQTL -log10(p)")
+    ) +
+    theme_classic() +
+    theme(
+      axis.text = element_text(size = 12, color = "black"),
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      axis.title = element_text(size = 16, color = "black"),
+      legend.title = element_text(size = 16),
+      legend.text = element_text(size = 14),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      axis.line = element_line(color = "black", size = 0.8),
+      axis.ticks = element_line(color = "black", size = 0.8),
+      legend.position = "none"
+    ) +
+    xlim(109673856, 111795819) +
+    ylim(0, max(coloc_results$log_pval_nominal, na.rm = TRUE) * 1.05)
+  
+  if (nrow(top_snp) > 0) {
+    p <- p +
+      geom_point(data = top_snp, aes(x = position, y = log_pval_nominal),
+                 size = 3.5, shape = 23, fill = "purple", color = "antiquewhite") +
+      geom_text(data = top_snp, aes(x = position, y = log_pval_nominal),
+                label = "chr23:110548741:C:A", vjust = -0.8, hjust = 1, size = 4, fontface = "bold")
+  }
+  
+  ggsave(plot_path, p, width = 8, height = 6, dpi = 1000)
+}
+```
+
+Colocalization AoU Locus Visualization:
+```{r}
+library(dplyr)
+library(data.table)
+library(ggplot2)
+library(tidyr)
+
+populations <- list(
+  META = "META",
+  EUR  = "EUR",
+  AFR  = "AFR",
+  AMR  = "AMR"
+)
+
+for (pop in names(populations)) {
+  
+  ld_path <- paste0("~/mesa_pwas_coloc/aou_formatting/OID20771/X:110548741_LD_", pop, ".txt")
+  table_path <- paste0("~/mesa_pwas_coloc/aou_formatting/OID20771/", pop, "_cis_region_EM_239.tsv")
+  
+  ldinfo <- fread(ld_path)
+  ldinfo_formatted <- ldinfo %>%
+    select(Coord, R2) %>%
+    mutate(Coord = gsub("chr", "", Coord)) %>%
+    separate(Coord, into = c("CHR", "position"), sep = ":", convert = TRUE, remove = FALSE) %>%
+    mutate(position = as.numeric(position)) %>%
+    group_by(position) %>%
+    slice_max(R2, n = 1, with_ties = FALSE) %>%
+    ungroup() %>%
+    rename(ld = R2)
+  
+  filtered_table <- fread(table_path, header = TRUE)
+  filtered_table$alleles_formatted <- gsub('\\["', "", filtered_table$alleles)
+  filtered_table$alleles_formatted <- gsub('"\\]', "", filtered_table$alleles_formatted)
+  filtered_table$alleles_formatted <- gsub('","', ":", filtered_table$alleles_formatted)
+  filtered_table <- filtered_table %>%
+    separate(alleles_formatted, into = c("REF", "ALT"), sep = ":", remove = FALSE)
+  filtered_table$ID <- paste0(filtered_table$locus, ":", filtered_table$REF, ":", filtered_table$ALT)
+  filtered_table <- filtered_table %>% select(ID, Pvalue, Pvalue_log10, BETA, SE, CHR, POS)
+  
+  coloc_results <- left_join(filtered_table, ldinfo_formatted, by = c("POS" = "position")) %>%
+    mutate(
+      ld = as.numeric(ld),
+      ld_category = cut(ld,
+                        breaks = c(0, 0.2, 0.4, 0.6, 0.8, 1.0),
+                        labels = c("0-0.2", "0.2-0.4", "0.4-0.6", "0.6-0.8", "0.8-1.0"),
+                        include.lowest = TRUE)
+    ) %>%
+    arrange(desc(is.na(ld)), POS)
+  
+  top_snp <- coloc_results %>% filter(ID == "chrX:110548741:C:A")
+  
+  p <- ggplot(coloc_results, aes(x = POS, y = Pvalue_log10)) +
+    geom_point(aes(fill = ld_category), color = "black", shape = 21, size = 2.5, stroke = 0.2, alpha = 0.8) +
+    scale_fill_manual(
+      values = c("0-0.2" = "royalblue3", "0.2-0.4" = "lightblue2", "0.4-0.6" = "springgreen3",
+                 "0.6-0.8" = "orange1", "0.8-1.0" = "red2"),
+      name = expression(r^2)
+    ) +
+    scale_color_identity() +
+    labs(
+      x = "Chromosome 23 SNP Position",
+      y = paste0("AoU CHRDL1 CDS ± 1 Mb -log10(p)")
+    ) +
+    theme_classic() +
+    theme(
+      axis.text = element_text(size = 12, color = "black"),
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      axis.title = element_text(size = 16, color = "black"),
+      legend.title = element_text(size = 16),
+      legend.text = element_text(size = 14),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      axis.line = element_line(color = "black", size = 0.8),
+      axis.ticks = element_line(color = "black", size = 0.8),
+      legend.position = "none"
+    ) +
+    xlim(109673856, 111795819) +
+    ylim(0, max(coloc_results$Pvalue_log10, na.rm = TRUE) * 1.05)
+  
+  if (nrow(top_snp) > 0) {
+    p <- p +
+      geom_point(data = top_snp, aes(x = POS, y = Pvalue_log10),
+                 size = 3.5, shape = 23, fill = "purple", color = "antiquewhite") +
+      geom_text(data = top_snp, aes(x = POS, y = Pvalue_log10),
+                label = "chr23:110548741:C:A", vjust = -0.8, hjust = 1, size = 4, fontface = "bold")
+  }
+  
+  out_path <- paste0("~/final_plots/colocalization/OID20771_", pop, "_aou_locuszoom_ldlink.png")
+  ggsave(out_path, p, width = 8, height = 6, dpi = 1000)
+}
+```
+
+Fine-map Manhattan Plot:
+```{r}
+library(dplyr)
+library(data.table)
+library(stringr)
+library(ggplot2)
+library(tidyr)
+
+finemap_models <- fread("~/compare_susie/meta_cis_tensor_vs_susier_vs_sushie_vs_multi_vs_susiex.tsv")
+
+finemap_models_filtered <- finemap_models %>%
+  filter(phenotype_id == "OID20771")
+tensor_finemap <- finemap_models_filtered %>% select(tensor_PIP) %>% filter(!is.na(tensor_PIP)) %>% count()
+susie_finemap <- finemap_models_filtered %>% select(susieR_PIP) %>% filter(!is.na(susieR_PIP)) %>% count()
+sushie_finemap <- finemap_models_filtered %>% select(sushie_PIP) %>% filter(!is.na(sushie_PIP)) %>% count()
+multi_finemap <- finemap_models_filtered %>% select(multi_PIP) %>% filter(!is.na(multi_PIP)) %>% count()
+susiex_finemap <- finemap_models_filtered %>% select(susieX_PIP) %>% filter(!is.na(susieX_PIP)) %>% count()
+
+combined <- data.frame(TensorQTL = (tensor_finemap$n),
+                       SusieR = (susie_finemap $n),
+                       SuShiE = (sushie_finemap$n),
+                       Multi = (multi_finemap$n),
+                       SusieX = (susiex_finemap$n))
+
+#count snps per method
+n_snps <- finemap_models_filtered %>%
+  filter(is.na(susieX_CS) | susieX_CS != 2) %>%
+  summarise(
+    TensorQTL  = sum(!is.na(tensor_PIP)),
+    SuShiE     = sum(!is.na(sushie_PIP)),
+    MultiSuSiE = sum(!is.na(multi_PIP)),
+    SuSiEx     = sum(!is.na(susieX_PIP))
+  )
+
+final_plot <- finemap_models_filtered %>%
+  mutate(
+    CHR = str_extract(SNP, "^[^:]+"),
+    POS = as.numeric(str_extract(SNP, "(?<=:)[0-9]+(?=:)"))
+  ) %>%
+  filter(is.na(susieX_CS) | susieX_CS != 2) %>%
+  pivot_longer(
+    cols = c(tensor_PIP, sushie_PIP, multi_PIP, susieX_PIP),
+    names_to = "method",
+    values_to = "PIP"
+  ) %>%
+  mutate(method = factor(method,
+                         levels = c("tensor_PIP", "sushie_PIP", "multi_PIP", "susieX_PIP"),
+                         labels = c(
+                           paste0("TensorQTL SuSiE (n = ",  n_snps$TensorQTL,  ")"),
+                           paste0("SuShiE (n = ",     n_snps$SuShiE,     ")"),
+                           paste0("MultiSuSiE (n = ", n_snps$MultiSuSiE, ")"),
+                           paste0("SuSiEx (n = ",     n_snps$SuSiEx,     ")")
+                         )
+  )) %>%
+  ggplot(aes(x = POS, y = PIP, color = method)) +
+  geom_point(size = 2, alpha = 0.8, na.rm = TRUE) +
+  scale_color_manual(values = setNames(
+    c("indianred3", "deepskyblue3", "aquamarine3", "violetred4"),
+    c(
+      paste0("TensorQTL SuSiE (n = ",  n_snps$TensorQTL,  ")"),
+      paste0("SuShiE (n = ",     n_snps$SuShiE,     ")"),
+      paste0("MultiSuSiE (n = ", n_snps$MultiSuSiE, ")"),
+      paste0("SuSiEx (n = ",     n_snps$SuSiEx,     ")")
+    )
+  )) +
+  labs(x = "Chromosome 23 SNP Position", y = "PIP", color = "Fine-Mapping Model") +
+  theme_bw() +
+  theme(
+    legend.position = c(0.99, 0.99),
+    legend.justification = c(1, 1),
+    legend.text = element_text(size = 12),
+    legend.title = element_text(size = 13, face = "bold"),
+    legend.background = element_rect(fill = "white", color = "grey80"),
+    legend.key.size = unit(1, "lines"),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 12),
+    axis.text.y = element_text(size = 12),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14)
+  )
+
+ggsave("~/final_plots/colocalization/OID20771_PIP_by_model.png", final_plot, width = 8, height = 6, dpi = 1000)
+
+tiff("~/final_plots/thesis_figure_10.tiff", width = 8, height = 6, units = 'in', res = 1000, compression = 'lzw')
+print(final_plot)
+dev.off()
+```
+
+Credible Set Size Distribution - Cis only for paper:
+```{r}
+library(data.table)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(knitr)
+library(gridExtra)
+
+#function to load data files
+load_data <- function(file_path, data_type, ancestry) {
+  tryCatch({
+    data <- fread(file_path, header = TRUE)
+    data$data_type <- data_type
+    data$ancestry <- ancestry
+    return(data)
+  }, error = function(e) {
+    warning(paste("Error loading file:", file_path, "\nError:", e$message))
+    return(NULL)
+  })
+}
+
+#load cis data
+cis_all <- load_data("~/tensor_susie/all_race/0.05cis_finemap_dedup.tsv", "cis", "All Ancestries")
+cis_euro <- load_data("~/tensor_susie/euro_amer/0.05cis_finemap_dedup.tsv", "cis", "European")
+cis_afr <- load_data("~/tensor_susie/afr_amer/0.05cis_finemap_dedup.tsv", "cis", "African")
+cis_hisp <- load_data("~/tensor_susie/hisp_amer/0.05cis_finemap_dedup.tsv", "cis", "Hispanic")
+cis_chn <- load_data("~/tensor_susie/chn_amer/0.05cis_finemap_dedup.tsv", "cis", "Chinese")
+
+#combine all data
+all_data <- rbindlist(list(
+  cis_all, cis_euro, cis_afr, cis_hisp, cis_chn
+), fill = TRUE, use.names = TRUE)
+
+all_data$af <- NULL
+
+#function to calculate credible set stats for each ancestry
+calc_cs_stats <- function(data) {
+  # Calculate CS size (number of variants per CS)
+  cs_size <- data %>%
+    group_by(ancestry, data_type, gene_id, cs_label) %>%
+    summarise(
+      cs_size = n(),
+      max_pip = max(pip, na.rm = TRUE),
+      avg_pip = mean(pip, na.rm = TRUE),
+      .groups = "drop"
+    )
+  
+  #calculate averages per ancestry
+  ancestry_stats <- cs_size %>%
+    group_by(ancestry, data_type) %>%
+    summarise(
+      avg_cs_size = mean(cs_size, na.rm = TRUE),
+      avg_max_pip = mean(max_pip, na.rm = TRUE),
+      avg_mean_pip = mean(avg_pip, na.rm = TRUE),
+      median_cs_size = median(cs_size, na.rm = TRUE),
+      total_cs = n(),
+      .groups = "drop"
+    )
+  
+  return(list(
+    cs_size = cs_size,
+    ancestry_stats = ancestry_stats
+  ))
+}
+
+#calculate stats for all data
+cs_stats <- calc_cs_stats(all_data)
+cs_size_data <- cs_stats$cs_size
+ancestry_stats <- cs_stats$ancestry_stats
+
+#make sure ancestry is in consistent order
+ancestry_order <- c("All Ancestries", "European", "African", "Hispanic", "Chinese")
+ancestry_stats$ancestry <- factor(ancestry_stats$ancestry, levels = ancestry_order)
+
+#function to create box plot with abbreviated ancestry labels
+create_cs_size_boxplot <- function(data, filename) {
+  #create a modified version of the data with capitalized labels for facet titles only
+  data_with_caps <- data %>%
+    mutate(data_type_cap = ifelse(data_type == "cis", "Cis", "Trans"))
+  
+  #create abbreviated ancestry names and ensure correct order
+  ancestry_mapping <- c(
+    "All Ancestries" = "ALL",
+    "European" = "EUR",
+    "African" = "AFR", 
+    "Hispanic" = "HIS",
+    "Chinese" = "CHN"
+  )
+  
+  #ensure ancestry is in the original order
+  ancestry_order <- c("All Ancestries", "European", "African", "Hispanic", "Chinese")
+  data_with_caps$ancestry <- factor(data_with_caps$ancestry, levels = ancestry_order)
+  
+  #create the box plot with abbreviated ancestry labels
+  a1 <- ggplot(data_with_caps, aes(x = ancestry, y = cs_size, fill = ancestry)) +
+    geom_violin(trim = FALSE, alpha = 0.7) +
+    geom_boxplot(width = 0.075, outlier.size = 0.5, alpha = 0.5) +
+    #add mean points as diamonds
+    stat_summary(fun = mean, geom = "point", shape = 23, size = 5, 
+                 fill = "white", color = "black") +
+    #add mean labels with background shade
+    stat_summary(
+      fun = mean,
+      geom = "label",
+      aes(label = sprintf("%.3f", after_stat(y))),
+      hjust = -0.2,
+      size = 5, 
+      fontface = "bold",
+      fill = "white",
+      label.size = 0,
+      color = "black"
+    ) +
+    scale_fill_manual(values = c(
+      "All Ancestries" = "red3", 
+      "European" = "orange2", 
+      "African" = "darkolivegreen3", 
+      "Hispanic" = "plum3", 
+      "Chinese" = "lightblue3"
+    )) +
+    #use the abbreviated ancestry names for the x-axis
+    scale_x_discrete(labels = ancestry_mapping) +
+    coord_cartesian(ylim = c(1, 25)) +
+    scale_y_continuous(breaks = c(1, 5, 10, 15, 20, 25)) +
+    labs(
+      title = "Credible Set Size Distribution by Ancestry",
+      x = "",
+      y = "Credible Set Size (# variants)"
+    ) +
+    theme_minimal() +
+    theme(
+      text = element_text(size = 14),
+      axis.title = element_text(size = 16, face = "bold"),
+      axis.text.x = element_text(size = 16, angle = 0, hjust = 0.5, face = "bold"),
+      axis.text.y = element_text(size = 12, face = "bold"),
+      plot.title = element_blank(),
+      legend.position = "none",
+      strip.text = element_text(size = 14, face = "bold"),
+      plot.margin = margin(t = 20, r = 40, b = 20, l = 20)
+    )
+  
+  ggsave(filename, plot = a1, width = 10, height = 7, dpi = 1000)
+  return(a1)
+
+}
+
+#generate box plot with abbreviated ancestry labels
+a1 <- create_cs_size_boxplot(
+  cs_size_data,
+  "~/final_plots/fine_mapping/cis_cs_size_violin_zoomed.png"
+)
+```
+
+Max PIP/Protein Distribution - Cis only for paper:
+```{r}
+library(data.table)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(knitr)
+library(gridExtra)
+
+#function to load data files with proper error handling
+load_data <- function(file_path, data_type, ancestry) {
+  tryCatch({
+    data <- fread(file_path, header = TRUE)
+    data$data_type <- data_type
+    data$ancestry <- ancestry
+    return(data)
+  }, error = function(e) {
+    warning(paste("Error loading file:", file_path, "\nError:", e$message))
+    return(NULL)
+  })
+}
+
+#load cis data
+cis_all <- load_data("~/tensor_susie/all_race/0.05cis_finemap_dedup.tsv", "cis", "All Ancestries")
+cis_euro <- load_data("~/tensor_susie/euro_amer/0.05cis_finemap_dedup.tsv", "cis", "European")
+cis_afr <- load_data("~/tensor_susie/afr_amer/0.05cis_finemap_dedup.tsv", "cis", "African")
+cis_hisp <- load_data("~/tensor_susie/hisp_amer/0.05cis_finemap_dedup.tsv", "cis", "Hispanic")
+cis_chn <- load_data("~/tensor_susie/chn_amer/0.05cis_finemap_dedup.tsv", "cis", "Chinese")
+
+#combine all data
+all_data <- rbindlist(list(
+  cis_all, cis_euro, cis_afr, cis_hisp, cis_chn
+), fill = TRUE, use.names = TRUE)
+
+all_data$af <- NULL
+
+#function to calculate max PIP/protein stats for each ancestry
+calc_cs_stats <- function(data) {
+  cs_size <- data %>%
+    group_by(ancestry, data_type, gene_id) %>%
+    summarise(
+      max_pip = max(pip, na.rm = TRUE),
+      avg_pip = mean(pip, na.rm = TRUE),
+      .groups = "drop"
+    )
+  
+  ancestry_stats <- cs_size %>%
+    group_by(ancestry, data_type) %>%
+    summarise(
+      avg_max_pip = mean(max_pip, na.rm = TRUE),
+      avg_mean_pip = mean(avg_pip, na.rm = TRUE),
+      total_cs = n(),
+      .groups = "drop"
+    )
+  
+  return(list(
+    cs_size = cs_size,
+    max_pip = cs_size,  # max_pip per protein IS cs_size
+    ancestry_stats = ancestry_stats
+  ))
+}
+
+#calculate stats for all data
+cs_stats <- calc_cs_stats(all_data)
+max_pip_data <- cs_stats$max_pip
+ancestry_stats <- cs_stats$ancestry_stats
+
+#make sure ancestry is in consistent order
+ancestry_order <- c("All Ancestries", "European", "African", "Hispanic", "Chinese")
+ancestry_stats$ancestry <- factor(ancestry_stats$ancestry, levels = ancestry_order)
+
+#function to create box plot with abbreviated ancestry labels
+create_max_pip_violin <- function(data, filename) {
+  # Create a modified version of the data with capitalized labels for facet titles only
+  data_with_caps <- data %>%
+    mutate(data_type_cap = ifelse(data_type == "cis", "Cis", "Trans"))
+  
+  #create abbreviated ancestry names and ensure correct order
+  ancestry_mapping <- c(
+    "All Ancestries" = "ALL",
+    "European" = "EUR",
+    "African" = "AFR", 
+    "Hispanic" = "HIS",
+    "Chinese" = "CHN"
+  )
+  
+  #ensure ancestry is in the original order
+  ancestry_order <- c("All Ancestries", "European", "African", "Hispanic", "Chinese")
+  data_with_caps$ancestry <- factor(data_with_caps$ancestry, levels = ancestry_order)
+  
+  #create the box plot with abbreviated ancestry labels
+  b1 <- ggplot(data_with_caps, aes(x = ancestry, y = max_pip, fill = ancestry)) +
+    geom_violin(trim = FALSE, alpha = 0.7) +
+    geom_boxplot(width = 0.1, outlier.size = 0.5, alpha = 0.5) +
+    #add mean points as diamonds
+    stat_summary(fun = mean, geom = "point", shape = 23, size = 5, 
+                 fill = "white", color = "black") +
+    #add mean labels with background shade
+    stat_summary(
+      fun = mean,
+      geom = "label",
+      aes(label = sprintf("%.3f", after_stat(y))),
+      hjust = -0.3,
+      size = 5, 
+      fontface = "bold",
+      fill = "white",
+      label.size = 0,
+      color = "black"
+    ) +
+    #facet_wrap(~ data_type_cap, scales = "free_x") +
+    scale_fill_manual(values = c(
+      "All Ancestries" = "red3", 
+      "European" = "orange2", 
+      "African" = "darkolivegreen3", 
+      "Hispanic" = "plum3", 
+      "Chinese" = "lightblue3"
+    )) +
+    #use the abbreviated ancestry names for the x-axis
+    scale_x_discrete(labels = ancestry_mapping) +
+    coord_cartesian(ylim = c(0, 1)) +
+    scale_y_continuous(breaks = c(0, .25, .5, .75, 1)) +
+    labs(
+      title = "Maximum PIP Distribution by Ancestry",
+      x = "",
+      y = "Maximum PIP per Protein"
+    ) +
+    theme_minimal() +
+    theme(
+      text = element_text(size = 14),
+      axis.title = element_text(size = 16, face = "bold"),
+      axis.text.x = element_text(size = 16, angle = 0, hjust = 0.5, face = "bold"),
+      axis.text.y = element_text(size = 12, face = "bold"),
+      plot.title = element_blank(),
+      legend.position = "none",
+      strip.text = element_text(size = 14, face = "bold"),
+      plot.margin = margin(t = 20, r = 40, b = 20, l = 20)
+    )
+  
+  ggsave(filename, plot = b1, width = 10, height = 7, dpi = 1000)
+  return(b1)
+}
+
+#generate box plot with abbreviated ancestry labels
+b1 <- create_max_pip_violin(
+  max_pip_data,
+  "~/final_plots/fine_mapping/cis_max_pip_violin_zoomed.png"
+)
+```
+
+
+```{r}
+library(gridExtra)
+library(cowplot)
+
+tiff("~/final_plots/figure_3.tiff", width = 21, height = 21, units = 'in', res = 800, compression = 'lzw')
+plot_grid(a1, b1, p1, p2, p3, f, nrow = 3, labels = c("A", "B", "C", "D", "E", "F"), label_size = 32)
+dev.off()
+```
+```{r}
+tiff("~/final_plots/sup_figure_1.tiff", width = 22, height = 9.5, units = 'cm', res = 300, compression = 'lzw')
+plot_grid(a, b, nrow = 1, labels = c("A", "B"), label_size = 14)
+dev.off()
+```
+
+Max PIP/Protein TensorQTL SuSiE vs. SuSiE R (Defense only):
+```{r}
+library(dplyr)
+library(ggplot2)
+
+cis <- read.table("~/compare_susie/all_race/0.05cis_R_vs_tensor", header = TRUE, stringsAsFactors = FALSE, sep = "\t")
+
+#function to create a 2D comparison plot with R², slope, and intercept
+create_comparison_plot <- function(raw_data, x_pip_col, y_pip_col, x_label, y_label, color) {
+  #calculate Max PIP/Proteins
+  plot_data <- raw_data %>%
+    group_by(phenotype_id) %>%
+    summarise(
+      x_max = suppressWarnings(max(!!sym(x_pip_col), na.rm = TRUE)),
+      y_max = suppressWarnings(max(!!sym(y_pip_col), na.rm = TRUE)),
+      .groups = 'drop'
+    ) %>%
+    mutate(
+      x_max = ifelse(is.infinite(x_max), NA, x_max),
+      y_max = ifelse(is.infinite(y_max), NA, y_max)
+    ) %>%
+    filter(!is.na(x_max) & !is.na(y_max))
+  
+  #calculate correlation and R2
+  correlation <- cor(plot_data$x_max, plot_data$y_max, use = "complete.obs")
+  r_squared <- correlation^2
+  
+  #fit linear model (with intercept)
+  lm_fit <- lm(y_max ~ x_max, data = plot_data)
+  slope <- coef(lm_fit)[2]
+  intercept <- coef(lm_fit)[1]
+  
+  #create the plot
+  p <- ggplot(plot_data, aes(x = x_max, y = y_max)) +
+    geom_point(alpha = 0.7, color = color, size = 2) +
+    geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "gray40", linewidth = 0.8) +
+    geom_abline(intercept = intercept, slope = slope, color = "antiquewhite4", linewidth = 1) +
+    xlim(0, 1) + ylim(0, 1) +
+    labs(
+      x = x_label,
+      y = y_label,
+      #title = paste(y_label, "vs", x_label, "Max PIP/Protein"),
+      subtitle = paste0(
+        "n = ", nrow(plot_data),
+        ", R² = ", round(r_squared, 3),
+        ", Slope = ", round(slope, 3)
+      )
+    ) +
+    theme_bw() +
+    theme(
+      plot.title = element_blank(),
+      plot.subtitle = element_text(size = 13),
+      axis.title = element_text(size = 18),
+      axis.text = element_text(size = 15),
+      panel.grid.minor = element_blank()
+    ) +
+    coord_fixed(ratio = 1)
+  
+  return(list(
+    plot = p,
+    n = nrow(plot_data),
+    cor = correlation,
+    r2 = r_squared,
+    slope = slope,
+    intercept = intercept
+  ))
+}
+
+#create comparison plots
+plot1 <- create_comparison_plot(cis, "susieR_PIP", "tensor_PIP", 
+                                "SuSiE R", "TensorQTL SuSiE", 
+                                "salmon3")
+
+ggsave("~/final_plots/tensor_vs_susieR_cis.png", plot1$plot, width = 8, height = 8, dpi = 300)
+```
+
