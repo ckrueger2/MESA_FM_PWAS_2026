@@ -54,7 +54,7 @@ This directory contains analysis scripts and resources used to build and evaluat
 
 ## Usage
 
-- Most scripts are written for R; run with `Rscript <script.R>` or open the `.Rmd` files in RStudio.
+- Scripts were written in Python, R, and bash; run with `Rscript <script.R>` or open the `.Rmd` files in RStudio and paste scripts in appropriate environments, changing paths and ancestry names where necessary.
 - Check the top of each script for required package lists and input/output path expectations.
 
 ## Dependencies
