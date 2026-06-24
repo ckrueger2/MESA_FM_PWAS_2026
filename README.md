@@ -2,6 +2,8 @@
 
 This directory contains analysis scripts and resources used to build and evaluate fine-mapping (FM) and PWAS models for the MESA proteomics project (2026). Below is a concise summary of the current folder structure and the main scripts found in each subdirectory.
 
+Our developed multi-ancestry TOPMed MESA proteome prediction models, fine-mapping output, and gene coding region boundaries used for analysis are available at https://doi.org/10.5281/zenodo.15483844
+
 ## Structure
 
 - **Proteomics-QC/**: Proteomics quality-control and population-specific processing
