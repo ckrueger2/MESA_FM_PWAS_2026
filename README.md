@@ -29,24 +29,27 @@ Our developed multi-ancestry TOPMed MESA proteome prediction models, fine-mappin
 	- `08ukb_mesa_finemap_replication.Rmd` - UKB SusieR, SuShiE, MultiSuSiE, and SuSiEx fine-mapping followed by precision, recall, and F1 calculations with TOPMed MESA ALL fine-mapping output
 
 - **elastic-net/**: Elastic net model training and nested cross-validation for GTEx-derived features
-	- `fm_cistrans_gtex_tiss_chrom_training.R` - create cis+trans FM EN models
-	- `fm_cistrans_gtex_v7_nested_cv_elnet.R` - create cis+trans FM EN models
-	- `fm_gtex_tiss_chrom_training.R` - create cis FM EN models
-	- `fm_gtex_v7_nested_cv_elnet.R` - create cis FM EN models
-	- `updated_gtex_tiss_chrom_training.R` - create cis-baseline EN models
-	- `updated_gtex_v7_nested_cv_elnet.R` - create cis-baseline EN models
+	- [`README.md`](elastic-net/README.md) - inputs, outputs, workflows, and naming conventions
+	- `en_cistrans_fm_training_wrapper.R` - wrapper to run cis+trans fine-mapped EN models
+	- `en_cistrans_fm_nested_cv_elnet.R` - cis+trans fine-mapped EN model implementation
+	- `en_cis_fm_training_wrapper.R` - wrapper to run cis fine-mapped EN models
+	- `en_cis_fm_nested_cv_elnet.R` - cis fine-mapped EN model implementation
+	- `en_training_wrapper.R` - wrapper to run standard cis EN models
+	- `en_nested_cv_elnet.R` - standard cis EN model implementation
 
 - **mashr/**: MASHR model generation utilities
-	- `make_MASHR_db_allsnps.R` — create MASHR DB using all SNPs
-	- `make_MASHR_db_finemapped.R` — create MASHR DB from fine-mapped variants
-	- `make_MASHR_db_top250_snps.R` — create MASHR DB using top 250 SNPs
-	- `run_MASHR.R` — script to run MASHR
+	- [`README.md`](mashr/README.md) - inputs, posterior outputs, and database workflows
+	- `make_MASHR_db_allsnps.R` — create MASHR PrediXcan db files using all SNPs
+	- `make_MASHR_db_finemapped.R` — create MASHR PrediXcan db files from fine-mapped variants
+	- `make_MASHR_db_top250_snps.R` — create MASHR PrediXcan db files using top 250 SNPs
+	- `run_MASHR.R` — script to model data using MASHR
 
 - **udr/**: UDR model generation utilities (alternative/complimentary model set)
-	- `make_UDR_db_allsnps.R` — create UDR DB using all SNPs
-	- `make_UDR_db_finemapped.R` — create MASHR DB from fine-mapped variants
-	- `make_UDR_db_top250_snps.R` — create MASHR DB using top 250 SNPs
-	- `run_udr.R` — script to run UDR
+	- [`README.md`](udr/README.md) - inputs, posterior outputs, and database workflows
+	- `make_UDR_db_allsnps.R` — create UDR PrediXcan db files using all SNPs
+	- `make_UDR_db_finemapped.R` — create UDR PrediXcan db files from fine-mapped variants
+	- `make_UDR_db_top250_snps.R` — create UDR PrediXcan db files using top 250 SNPs
+	- `run_udr.R` — script to model data using UDR
 
 - **pwas/**: PWAS with TOPMed MESA trained EN, MASHR, and UDR models in AoU and Pan-UKB
 	- `01pwas_in_aou.Rmd` - pre-processing of data and running PWAS analysis in All of Us (AoU) Researcher Workbench
