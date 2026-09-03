@@ -1,12 +1,23 @@
-# Elasticnet training inputs
+# Elastic-net training inputs and outputs
 
-This repository contains R scripts for training elastic-net gene expression prediction models.
-The main wrapper documented here is `code/updated_gtex_tiss_chrom_training.R`, which calls
-`code/updated_gtex_v7_nested_cv_elnet.R`.
+This repository contains R scripts for training elastic-net gene expression
+prediction models. Each wrapper takes a population name and chromosome number,
+then calls the corresponding training implementation in this folder. It is recommended to run a for loop to run all chromosomes sequentially, or run batches in parallel. Adjust the paths as needed in the wrappers. 
 
-## What the script does
+## Workflows
 
-The wrapper is run with two command-line arguments:
+| Workflow | Wrapper | Training script | Output prefix |
+| --- | --- | --- | --- |
+| Standard cis | `en_training_wrapper.R` | `en_nested_cv_elnet.R` | `~/Elasticnet/<pop>/cis-keepam-harmpost` |
+| Cis fine-mapped | `en_cis_fm_training_wrapper.R` | `en_cis_fm_nested_cv_elnet.R` | `~/Elasticnet/<pop>/cis_fm` |
+| Cis+trans fine-mapped | `en_cistrans_fm_training_wrapper.R` | `en_cistrans_fm_nested_cv_elnet.R` | `~/Elasticnet/<pop>/cistrans_fm_redo` |
+
+The `en_*_nested_cv_elnet.R` scripts contain the model-fitting functions. The
+`en_*_training_wrapper.R` scripts define the input paths and call `main()`.
+
+## What the scripts do
+
+The wrappers are run with two command-line arguments:
 
 - `pop`: population folder name such as `aapop`, `europop`, `chnpop`, or `hispop`
 - `chrom`: chromosome number such as `1`, `2`, or `22`
@@ -14,14 +25,16 @@ The wrapper is run with two command-line arguments:
 Example:
 
 ```bash
-Rscript code/updated_gtex_tiss_chrom_training.R aapop 1
+Rscript en_training_wrapper.R aapop 1
 ```
 
-The script reads SNP annotation, gene annotation, genotype, and expression files, then writes model summaries, SNP weights, and covariance estimates under the population-specific output folder, that are then used to create Elastic net db models.
+The scripts read SNP annotation, gene annotation, genotype, and protein expression
+files. They fit nested cross-validated elastic-net models and write model
+summaries, SNP weights, and genotype covariance estimates.
 
 ## Required packages
 
-The underlying R code uses:
+The R code uses:
 
 - `dplyr`
 - `glmnet`
@@ -30,9 +43,12 @@ The underlying R code uses:
 - `methods`
 - `tictoc`
 
+Fine-mapped workflows also use the packages required by the corresponding
+fine-mapping and trans-genotype functions.
+
 ## Required inputs
 
-The wrapper builds these example paths from `pop` and `chrom`:
+The standard wrapper builds these paths from `pop` and `chrom`:
 
 | Input | Path pattern |
 | --- | --- |
@@ -41,18 +57,27 @@ The wrapper builds these example paths from `pop` and `chrom`:
 | Genotype matrix | `~/Elasticnet/<pop>/data/split_genotype/imputing/genotype.impute.chr<chrom>.txt.gz` |
 | Expression matrix | `~/Elasticnet/<pop>/data/geneexpression.txt` |
 
-The script also expects these output directories to exist before running:
+The fine-mapped wrappers use harmonized genotype inputs:
 
-- `~/Elasticnet/<pop>/cis/summary`
-- `~/Elasticnet/<pop>/cis/weights`
-- `~/Elasticnet/<pop>/cis/covariances`
+| Input | Path pattern |
+| --- | --- |
+| SNP annotation | `~/Elasticnet/<pop>/data/harmonized_genotypes/genotype.chr<chrom>.snp_annot.txt.gz` |
+| Genotype matrix | `~/Elasticnet/<pop>/data/harmonized_genotypes/imputing/genotype.impute.chr<chrom>.txt.gz` |
+| Gene annotation | `~/Elasticnet/input/geneannotation.txt` |
+| Expression matrix | `~/Elasticnet/<pop>/data/geneexpression.txt` |
+
+The output directories under each prefix must exist before running:
+
+- `<prefix>/summary`
+- `<prefix>/weights`
+- `<prefix>/covariances`
 
 ## Expected input shapes
 
 ### 1) SNP annotation
 
-The SNP annotation table is used to find variants inside the cis-window around each gene.
-At minimum, it should include `varID`, `pos`, `ref_vcf`, and `alt_vcf`.
+The SNP annotation table is used to identify variants in the cis-window around
+each gene. It should include `varID`, `pos`, `ref_vcf`, and `alt_vcf`.
 
 Example:
 
@@ -64,8 +89,8 @@ Example:
 
 ### 2) Gene annotation
 
-The gene annotation table is filtered by chromosome and gene type.
-The code expects at least these columns: `gene_id`, `gene_name`, `gene_type`, `chr`, `start`, and `end`.
+The gene annotation table is filtered by chromosome and gene type. It should
+include `gene_id`, `gene_name`, `gene_type`, `chr`, `start`, and `end`.
 
 Example:
 
@@ -73,91 +98,96 @@ Example:
 | --- | --- | --- | ---: | ---: | ---: |
 | ENSG00000111111.1 | GENE1 | protein_coding | 1 | 99000 | 103000 |
 | ENSG00000122222.1 | GENE2 | protein_coding | 1 | 150000 | 152000 |
-| ENSG00000133333.1 | GENE3 | protein_coding | 1 | 210000 | 214000 |
 
 ### 3) Genotype matrix
 
-The genotype file is read as a matrix with sample IDs in the first column and variant dosages in the remaining columns.
-Column names must match the `varID` values in the SNP annotation file.
+The genotype file contains sample IDs in the first column and variant dosages in
+the remaining columns. Column names must match the `varID` values in the SNP
+annotation file.
 
 Example:
 
-| sample_id | chr1_100012_A_G | chr1_100250_C_T | chr1_101004_G_A |
-| --- | ---: | ---: | ---: |
-| S001 | 0 | 1 | 2 |
-| S002 | 1 | 0 | 1 |
-| S003 | 2 | 1 | 0 |
+| sample_id | chr1_100012_A_G | chr1_100250_C_T |
+| --- | ---: | ---: |
+| S001 | 0 | 1 |
+| S002 | 1 | 0 |
+| S003 | 2 | 1 |
 
 ### 4) Expression matrix
 
-The expression file is read with sample IDs in the first column (`sidno`) and gene IDs in the remaining columns.
-Only genes present in the gene annotation file are used.
-
-Simulated example:
-
-| sidno | ENSG00000111111.1 | ENSG00000122222.1 | ENSG00000133333.1 |
-| --- | ---: | ---: | ---: |
-| S001 | 4.2 | 1.8 | 0.3 |
-| S002 | 3.9 | 2.1 | 0.5 |
-| S003 | 5.1 | 1.4 | 0.2 |
-
-## Output files
-
-The script writes files using the prefix `~/Elasticnet/<pop>/cis`.
-
-| Output | Path pattern | Content |
-| --- | --- | --- |
-| Model summaries | `~/Elasticnet/<pop>/cis/summary/model_chr<chrom>_model_summaries.txt` | Per-gene model performance and cross-validation metrics |
-| SNP weights | `~/Elasticnet/<pop>/cis/weights/model_chr<chrom>_weights.txt` | Non-zero SNP weights for fitted genes |
-| Covariances | `~/Elasticnet/<pop>/cis/covariances/model_chr<chrom>_covariances.txt` | Covariance values among selected SNPs |
-| Chromosome summary | `~/Elasticnet/<pop>/cis/summary/model_chr<chrom>_tiss_chr_summary.txt` | Sample count, chromosome, seed, and gene count |
-
-## Fine-mapped data
-
-If you want to train models using fine-mapped data, use the workflow in `code/fm_gtex_tiss_chrom_training.R` or `code/fm_cistrans_gtex_tiss_chrom_training.R`.
-That wrapper follows the same overall pattern as the standard script, but it also requires a fine-mapping file.
-
-Example command:
-
-```bash
-Rscript code/fm_gtex_tiss_chrom_training.R aapop 1
-```
-
-Additional fine-mapped input example:
-
-| Input | Path pattern |
-| --- | --- |
-| Fine-mapped gene/SNP file | `~/Elasticnet/fine_map/fm_data/<pop>_fm.txt` |
+The expression file contains sample IDs in the first column (`sidno`) and gene
+IDs in the remaining columns. Only genes present in the gene annotation file are
+used.
 
 Example:
 
-| ensg | cs_label | variant_id | pip |
-| --- | ---: | ---: | ---: |
-| ENSG00000111111.1 | L1 | chr1_100012_A_G | 0.9 |
-| ENSG00000122222.1 | L1 | chr1_100250_C_T | 0.8 |
-| ENSG00000133333.1 | L1 | chr1_101004_G_A | 0.85 |
+| sidno | ENSG00000111111.1 | ENSG00000122222.1 |
+| --- | ---: | ---: |
+| S001 | 4.2 | 1.8 |
+| S002 | 3.9 | 2.1 |
+| S003 | 5.1 | 1.4 |
 
-Where cs_label is each credible set identified within the region of the gene. 
+## Fine-mapped inputs
 
-Subnote: if you want to use cis+trans fine-mapped data, use `code/fm_cistrans_gtex_tiss_chrom_training.R`.
-That workflow needs the cis fine-mapping file above plus trans-specific inputs such as:
+The cis fine-mapped wrapper reads:
+
+```text
+~/Elasticnet/fine_map/fm_data/<pop>_fm.txt
+```
+
+The file should include `ensg`, `variant_id`, `cs_label`, and `pip`. The
+`variant_id` values are used to calculate fine-mapping penalty factors.
+
+The cis+trans fine-mapped wrapper additionally reads:
 
 | Input | Path pattern |
 | --- | --- |
-| Cis fine-mapped file | `~/Elasticnet/fine_map/fm_data/<pop>_fm.txt` |
-| Trans fine-mapped file | `~/Elasticnet/fine_map/fm_data/trans/<pop>_fm.txt` |
-| Trans genotype file | `~/Elasticnet/fine_map/fm_data/trans/<pop>_trans_genotypes.txt.gz` |
+| Cis fine-mapping | `~/Elasticnet/fine_map/fm_data/<pop>_fm.txt` |
+| Trans fine-mapping | `~/Elasticnet/fine_map/fm_data/trans/<pop>_fm.txt` |
+| Trans genotype matrix | `~/Elasticnet/fine_map/fm_data/trans/<pop>_trans_genotypes.txt.gz` |
 
-Example of trans genotype file:
+Example fine-mapping rows:
 
-| sample_id | chr1_100012_A_G | chr1_100250_C_T | chr1_101004_G_A |
-| --- | ---: | ---: | ---: |
-| S001 | 0 | 1 | 2 |
-| S002 | 1 | 0 | 1 |
-| S003 | 2 | 1 | 0 |
+| ensg | cs_label | variant_id | pip |
+| --- | --- | --- | ---: |
+| ENSG00000111111.1 | L1 | chr1_100012_A_G | 0.90 |
+| ENSG00000111111.1 | L2 | chr1_100250_C_T | 0.80 |
+
+## Output files
+
+Each workflow writes the following files below its workflow-specific prefix:
+
+| Output | Path pattern | Content |
+| --- | --- | --- |
+| Model summaries | `<prefix>/summary/model_chr<chrom>_model_summaries.txt` | Gene-level model parameters and nested cross-validation performance |
+| SNP weights | `<prefix>/weights/model_chr<chrom>_weights.txt` | Fitted SNP weights with gene, variant, reference, alternate, and beta columns |
+| Covariances | `<prefix>/covariances/model_chr<chrom>_covariances.txt` | Pairwise genotype covariance values for model SNPs |
+| Chromosome summary | `<prefix>/summary/model_chr<chrom>_tiss_chr_summary.txt` | Sample count, chromosome, random seed, and gene count |
+
+For the standard, cis fine-mapped, and cis+trans fine-mapped workflows, replace
+`<prefix>` with `cis-keepam-harmpost`, `cis_fm`, or `cistrans_fm_redo`, respectively.
+
+## Fine-mapped models
+
+Run the cis fine-mapped workflow with:
+
+```bash
+Rscript en_cis_fm_training_wrapper.R aapop 1
+```
+
+Run the cis+trans fine-mapped workflow with:
+
+```bash
+Rscript en_cistrans_fm_training_wrapper.R aapop 1
+```
+
+The fine-mapped workflows use the fine-mapping probabilities to construct
+penalty factors. The cis+trans workflow combines cis and trans variants and
+reports separate cis and trans SNP counts in the model summaries.
 
 ## Notes
 
-- The cis-window used by the R code is 1 Mb by default.
-- The script filters SNPs by minor allele frequency using the `maf` argument in `main()`; the wrapper uses the default value of `0.01`.
-
+- The default cis-window is 1 Mb.
+- The default minor allele frequency filter is `maf=0.01`.
+- The wrappers currently use `null_testing=FALSE`.
+- The wrapper source paths and data roots are configured for `~/Elasticnet`.
